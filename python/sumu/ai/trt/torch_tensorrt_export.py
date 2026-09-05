@@ -14,6 +14,7 @@ import torch
 logger = logging.getLogger(__name__)
 
 _torchtrt_muted = False
+_torchtrt_swallow = True
 
 # TensorRT build-time scratch cap. workspace only bounds how much scratch a tactic may
 # use during autotuning at BUILD time -- it is NOT runtime engine memory, and a tactic
@@ -31,18 +32,23 @@ _torchtrt_muted = False
 _WORKSPACE_CAP_BYTES = 2 * 1024**3
 
 
-def _mute_torch_tensorrt() -> None:
-    global _torchtrt_muted
-    if _torchtrt_muted:
-        return
-    _torchtrt_muted = True
+def _mute_torch_tensorrt(*, swallow: bool = True) -> None:
+    """Keep TensorRT chatter off the hot path. During in-app compile, ``swallow=False``
+    so ERROR still reaches stderr (frozen: ``sumu.log``) -- otherwise a failed
+    engine build looks like a silent hang then a generic 'compile failed'."""
+    global _torchtrt_muted, _torchtrt_swallow
     import tensorrt as trt
     import torch_tensorrt
     torch_tensorrt.logging._LOGGER.setLevel(logging.ERROR)
     torch_tensorrt.logging._LOGGER.handlers.clear()
-    torch_tensorrt.logging._LOGGER.addHandler(logging.NullHandler())
-    torch_tensorrt.logging._LOGGER.propagate = False
+    if swallow:
+        torch_tensorrt.logging._LOGGER.addHandler(logging.NullHandler())
+        torch_tensorrt.logging._LOGGER.propagate = False
+    else:
+        torch_tensorrt.logging._LOGGER.propagate = True
     torch.ops.tensorrt.set_logging_level(int(trt.ILogger.Severity.ERROR))
+    _torchtrt_muted = True
+    _torchtrt_swallow = swallow
 
 
 def get_workspace_size_bytes() -> int:
@@ -98,7 +104,9 @@ def compile_and_save_torchtrt_dynamo(
     explicitly when using ``torch_tensorrt.Input`` objects.
     """
     import torch_tensorrt  # type: ignore[import-not-found]
-    _mute_torch_tensorrt()
+    # Don't swallow TRT ERROR during compile: the frozen GUI redirects stderr to sumu.log,
+    # which is the only diagnostic when the "compile acceleration engines" button fails.
+    _mute_torch_tensorrt(swallow=False)
 
     has_dynamic = any(isinstance(inp, torch_tensorrt.Input) for inp in inputs)
     if device is None:

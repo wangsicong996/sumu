@@ -116,11 +116,11 @@ Sumu 换了个顺序想这件事：
 3. **第三方补丁**：`bash scripts/apply_patches.sh`（ultralytics / mmengine 运行时补丁）。
 4. **模型权重**：从 [lada HuggingFace](https://huggingface.co/ladaapp/lada) 下载 `lada_mosaic_restoration_model_generic_v1.2.pth` 与 `lada_mosaic_detection_model_v4_fast.pt` 放入 `model_weights/`。
 5. **运行**：VSCode task `sumu: run (dev)`，或 `.venv\Scripts\python.exe scripts/play.py`。首次运行无 TRT 引擎时走 eager 回退，首屏提示编译加速引擎。
-6. **打包分发**：`powershell -ExecutionPolicy Bypass -File scripts/build_dist.ps1`，产物 `dist/sumu/`（≈6.9GB，不含 TRT 引擎）。`-SkipNative` / `-FastFreeze` 等选项见 [docs/packaging.md](docs/packaging.md)。
+6. **打包分发**：`powershell -ExecutionPolicy Bypass -File scripts/build_dist.ps1`，产物 `dist/sumu/`（≈6.9GB，不含 TRT 引擎，含离线编译所需的 TensorRT builder / NVRTC）。分卷上传：`scripts/package_release.ps1`（`.7z.001` = part1，`.7z.002` = part2）。推 `v*` tag 或手动跑 GitHub Action `release` 会构建并上传 Release。细节见 [docs/packaging.md](docs/packaging.md)。
 
 > 纯本地实时播放只需上面 1–5；**Web 串流 / 离线导出**还需把带 NVENC 的 `ffmpeg.exe` 放进 PATH（`ffprobe.exe` 已是既有软依赖）。
 
-> **TensorRT 引擎不进分发包**：引擎绑定 GPU 架构 + TRT 版本 + 精度 + OS，不能跨机分发。分发包不含预编译引擎，每台机器首次运行自行编译——编译前走 eager 回退（约 3× 慢），首屏提示「编译加速引擎」，编完热切换并落盘缓存，非 Nvidia / 非 fp16 机器恒走 eager。
+> **TensorRT 引擎不进分发包，但编译期运行时进包**：引擎绑定 GPU 架构 + TRT 版本 + 精度 + OS，不能跨机分发。每台机器首次运行自行**离线**编译（不访问网络）——编译前走 eager 回退（约 3× 慢），首屏提示「编译加速引擎」，编完热切换并落盘缓存，非 Nvidia / 非 fp16 机器恒走 eager。失败时看 `sumu.log`。
 
 ## License
 

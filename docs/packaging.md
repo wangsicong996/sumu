@@ -12,7 +12,17 @@ powershell -ExecutionPolicy Bypass -File scripts/build_dist.ps1 -SkipNative
 # 只改了 sumu 自己的 Python 源码 / native 扩展（依赖集合没变）时，跳过第 3 步的全量重拷贝：
 powershell -ExecutionPolicy Bypass -File scripts/build_dist.ps1 -FastFreeze
 ```
-产物：`dist/sumu/`（含 `sumu.exe` + `_internal/` + `model_weights/`），实测 **≈6.9GB**（不含 TRT 引擎，首启自编；layer-1 剔除 torch `*.lib`/headers + polars/scipy/matplotlib 后）。
+产物：`dist/sumu/`（含 `sumu.exe` + `_internal/` + `model_weights/`），实测 **≈6.9GB**（不含 TRT **引擎**；含 TRT **编译期运行时** — `nvinfer_builder_resource` + NVRTC 别名 — 以便用户机离线编译引擎）。
+
+GitHub Release 分卷（GitHub 单文件 2GiB 上限）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/package_release.ps1
+# 产物 dist/release/sumu-<ver>-windows-x64.7z.001  (=part1)
+#      dist/release/sumu-<ver>-windows-x64.7z.002  (=part2) …
+```
+
+推 `v*` tag 或手动跑 Actions workflow `release` 会构建、分卷并上传到 GitHub Release。
 
 ### `-FastFreeze`（第 3 步耗时优化）
 
@@ -30,8 +40,12 @@ powershell -ExecutionPolicy Bypass -File scripts/build_dist.ps1 -FastFreeze
 - `python/sumu/app.py` — frozen-safe 的日常播放器 `main()`（由 `scripts/play.py` dev shim 复用）。
 - `python/sumu/pipeline.py` — `build_models`（从 run_player 抽出，dev/frozen 共用）。
 - `packaging/sumu.spec` — 冻结配方（见下）。
-- `packaging/rthook_dll_path.py` — 运行时 hook，把 bundle 目录塞进 PATH + `os.add_dll_directory`。
+- `packaging/rthook_dll_path.py` — 运行时 hook：DLL 搜索路径（含 `torch/lib` / `tensorrt_libs`）+ 离线环境变量。
+- `python/sumu/offline_env.py` — 离线 env / DLL 搜索路径（dev 与 frozen 共用）。
 - `scripts/build_dist.ps1` — 编排整条管线。
+- `scripts/stage_trt_compile_runtime.py` — freeze 后补齐 builder-resource + NVRTC 120 别名。
+- `scripts/package_release.ps1` — 7-Zip 分卷（part1 / part2 / …）供 GitHub Release。
+- `.github/workflows/release.yml` — tag / 手动触发：构建 → 分卷 → 上传 Release。
 - `scripts/gen_logo_assets.py` — Logo 单源流水线（见下）。
 - `assets/sumu-logo-1024.png` — **唯一可改的 Logo 源**（1024×1024 RGBA）；其余尺寸/ico/嵌入用 RGBA 由脚本生成。
 
@@ -57,8 +71,9 @@ powershell -ExecutionPolicy Bypass -File scripts/build_dist.ps1 -FastFreeze
 - **onedir**（`COLLECT`），**全程 `upx=False`**（UPX 会毁 CUDA/TRT 的 CFG DLL）。
 - `sys.setrecursionlimit(*5)`（torch 分析会爆默认递归深度）。
 - `collect_all`：torch / torchvision / ultralytics / cv2。
-- **TensorRT 三件套无自动 hook**，显式 `collect_dynamic_libs` + `collect_submodules`：torch_tensorrt / tensorrt / tensorrt_libs。
-- 额外 `collect_dynamic_libs('torch')`（Windows 下 CUDA DLL 在 `torch/lib` 内）。
+- **TensorRT 三件套无自动 hook**，显式 `collect_all` + `collect_dynamic_libs` + 目录 walk：torch_tensorrt / tensorrt / tensorrt_libs。**编译期** DLL（`nvinfer_builder_resource_*.dll`）必须打进包，否则冻结后点「编译加速引擎」会失败（该 DLL 是 TensorRT `LoadLibrary` 按 basename 加载，不是 PE import，`collect_dynamic_libs` 经常漏掉）。
+- 额外 `collect_dynamic_libs('torch')`（Windows 下 CUDA DLL 在 `torch/lib` 内）。ctypes 查找 `nvrtc64_120_0.dll`（CUDA 12.0 名字），torch cu128 实际带的是 `nvrtc64_128_0.dll` —— spec 与 `scripts/stage_trt_compile_runtime.py` 会做 120 别名。
+- `collect_submodules`：`torch.export` / `torch._export` / `torch.fx`（`torch_tensorrt.compile(ir="dynamo")` 走 export，不走 inductor）。
 - mmengine：`collect_submodules` + `collect_data_files`；`copy_metadata`(torch,torchvision,numpy,ultralytics,mmengine)。
 - **native ext + 7 个 ffmpeg DLL 作为 `binaries` 落到 bundle 根 `.`**（pyd 靠同目录加载 ffmpeg，见 `docs/native_core.md`）。
 - **`excludes=['av', 'polars', 'scipy', 'matplotlib', 'mpl_toolkits']`** —— daily 入口不用 PyAV；后三者是 ultralytics/mmengine 的可选依赖，推理路径不 import。
@@ -67,7 +82,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build_dist.ps1 -FastFreeze
   - `polars` / `_polars_runtime_32` / `scipy` / `matplotlib` 残余
   - **保留** `PIL`（ultralytics 启动即 import）与 tcl/tk（`pyi_rth__tkinter` 硬查 `_tcl_data`，缺了直接 `FileNotFoundError`）
   - 目标机 quarantine 冒烟实测：9.78GB → 6.87GB，`== env/load_models/player.open ==` 全过、TRT active
-- `console=False`（日常包无黑框；stdout/stderr 由 `scripts/sumu_main.py` 重定向到 `<exe 同级>/sumu.log`）。
+- `console=False`（GUI 子系统，像 Blender）：`scripts/sumu_main.py` 启动时 `AllocConsole()` 弹出系统控制台，stdout/stderr 同时打到该窗口和 `<exe 同级>/sumu.log`。控制台关闭按钮已去掉，避免误关杀死播放器。
 
 ## 权重与 TRT 引擎装配
 
@@ -75,7 +90,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build_dist.ps1 -FastFreeze
 - `build_dist.ps1` 只拷贝**权重**（不含引擎）：
   - `lada_mosaic_restoration_model_generic_v1.2.pth`（≈75MB）
   - `lada_mosaic_detection_model_v4_fast.pt`（≈6MB）
-- **TRT 引擎不随包分发**——`hardware_compatible=False` 的引擎只在编译它的那套 GPU 架构 / TRT 版本 / 精度 / OS 上能反序列化（文件名 tag 如 `sm89.trt1012.fp16.win`），预编译引擎只对同款硬件有用。故改为**每台机器首次运行自行编译**：启动 warmup 走 load-only（`build_models(..., allow_trt_compile=False)`，引擎在就用、不在就 eager），首屏「打开文件」按钮下方给出「编译加速引擎」提示，用户点击后后台编译（数分钟，进度条原位显示），编完**热切换立即生效**、且落盘缓存供下次 load-only 直接命中（届时提示不再出现）。编译流程见 `python/sumu/app.py` 的 compile 状态机 + `restorationpipeline.compile_and_activate_trt`。
+- **TRT 引擎不随包分发**——`hardware_compatible=False` 的引擎只在编译它的那套 GPU 架构 / TRT 版本 / 精度 / OS 上能反序列化（文件名 tag 如 `sm89.trt1012.fp16.win`），预编译引擎只对同款硬件有用。故改为**每台机器首次运行自行编译**：启动 warmup 走 load-only（`build_models(..., allow_trt_compile=False)`，引擎在就用、不在就 eager），首屏「打开文件」按钮下方给出「编译加速引擎」提示，用户点击后后台**离线**编译（数分钟，不访问网络；builder-resource / NVRTC 已打进包），编完**热切换立即生效**、且落盘缓存供下次 load-only 直接命中（届时提示不再出现）。编译流程见 `python/sumu/app.py` 的 compile 状态机 + `restorationpipeline.compile_and_activate_trt`。
 - 冒烟只验证 `== env == / == load_models == / (== player.open ==)` 三标记 + 无 Traceback；load-only 不再编译，`load_models` 很快，不再断言「引擎复用」时长。
 - **权重源目录解析顺序**（其他机器/团队成员构建时不用改脚本）：`-WeightsSrc` 显式参数 → `$env:SUMU_WEIGHTS_SRC` 环境变量（`setx SUMU_WEIGHTS_SRC "C:\path\to\model_weights"` 设一次，跨会话生效）→ `$env:LADA_MODEL_WEIGHTS_DIR`（legacy 兼容）。三者均未设置时脚本直接报错退出——sumu 自包含，不假定任何外部仓库布局。缺文件时报错会指出具体缺哪个文件。
 
@@ -86,7 +101,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build_dist.ps1 -FastFreeze
 
 ## 验证边界（重要）
 
-- **本包不含任何预编译 TRT 引擎**，每台机器首次运行经首屏提示自行编译（数分钟，需 `torch_tensorrt` 运行时 + 可写 `model_weights/`），产物 tag 如 `sm89.trt1012.fp16.win`，只对本机这套 arch/TRT/精度/OS 有效、落盘后下次直接命中。**编译前**去码走 eager PyTorch 回退（能用但约 3x 慢，实时可能追不上→回退原片）；**非 Nvidia / 非 fp16** 机器不触发编译，恒走 eager。
+- **本包不含任何预编译 TRT 引擎**，但**含编译期运行时**（builder-resource + NVRTC）。每台机器首次运行经首屏提示自行离线编译（数分钟，需可写 `model_weights/`），产物 tag 如 `sm89.trt1012.fp16.win`，只对本机这套 arch/TRT/精度/OS 有效、落盘后下次直接命中。**编译前**去码走 eager PyTorch 回退（能用但约 3x 慢，实时可能追不上→回退原片）；**非 Nvidia / 非 fp16** 机器不触发编译，恒走 eager。
 - 整栈只在目标机（RTX 4080 / 驱动 610.47 / py3.13 / torch 2.8.0+cu128）验证过。建议在无 Python/CUDA 的干净机再验一次（需 VC++ 2015+ 运行库）。
 - CJK 字体运行时从 `C:\Windows\Fonts` 加载（msyh.ttc…），缺失回退 ASCII——不随包；stripped/N 版 Windows 可能丢中文 UI。
 
@@ -96,8 +111,9 @@ powershell -ExecutionPolicy Bypass -File scripts/build_dist.ps1 -FastFreeze
 - **首次冷启动慢**：未命中 OS 缓存时，从 ≈10GB 包冷加载 torch CUDA DLL 到 `import torch` 可能 >25s；暖启 <10s。冒烟因此**轮询标记（上限 180s）**而非定时 sleep。
 - **`test_video.mp4` 是 .gitignore 的本机测试素材**，别的机器/团队成员 clone 后不带这个文件。冒烟测试检测不到它时会**自动降级**：跳过 `== player.open ==`（播放路径）校验，只验证 exe 能起、torch/CUDA 能 import、模型能 load、无 Traceback；同时打印黄字提醒"未做完整播放路径验证"。不会因为缺这个文件就把整条构建管线判失败。
 - smoke 判定失败（含降级模式下的失败）现在会让 `build_dist.ps1` **非零退出**——之前只打印红字但仍 0 退出，VSCode task 面板会一直显示绿色，看不出冒烟其实没过。
-- 构建期这些 ERROR/WARNING 均**无害**：`torch._C._jit/_nvrtc/_dynamo not found`（是 `_C` 的属性非独立模块）、大量 `torch.distributed._shard.checkpoint.* not found`（`collect_submodules` 扫到不存在项）、`nvrtc64_120_0.dll required via ctypes not found`（仅影响 JIT，基础推理不受影响）。
-- **不要在冻结路径用 `torch.compile`**（dynamo/inductor/triton 在冻结态很脆）；当前 AI 路径走预编译 TRT 引擎 + eager，不触发。
+- 构建期这些 ERROR/WARNING 均**无害**：`torch._C._jit/_nvrtc/_dynamo not found`（是 `_C` 的属性非独立模块）、大量 `torch.distributed._shard.checkpoint.* not found`（`collect_submodules` 扫到不存在项）。
+- **不要在冻结路径用 `torch.compile` / inductor / triton**（冻结态很脆）。in-app TRT 编译走 `torch_tensorrt.compile(ir="dynamo")` + TensorRT builder，不走 inductor；NVRTC 的 `nvrtc64_120_0.dll` 别名由 spec / `stage_trt_compile_runtime.py` 提供。
+- GitHub-hosted `windows-2022` 无 NVIDIA GPU，workflow `release` 默认 `-SkipSmoke`。本机验证仍用 `scripts/build_dist.ps1`。
 - PowerShell 5.1 对 native 命令做 `2>&1` 会把 stderr 每行包成 NativeCommandError；`build_dist.ps1` 用 `cmd /c "<cmd> 2>&1"` 在 cmd 内部合流规避。
 - `.vscode/` 默认在 `.gitignore` 中——若要把 `launch.json`/`tasks.json` 作为共享工程配置纳入版本管理，需在 `.gitignore` 里为这两个文件加 `!` 例外。
 

@@ -164,7 +164,9 @@ def _compile_worker(cstate: "_CompileState", res_model, res_path, device, fp16) 
             cstate.done = True
             cstate.running = False
     except Exception as e:  # noqa: BLE001 -- compile failure must never crash the player
-        print(f"== trt compile failed == {e!r}", file=sys.stderr)
+        import traceback
+        tb = traceback.format_exc()
+        print(f"== trt compile failed == {e!r}\n{tb}", file=sys.stderr)
         with cstate.lock:
             cstate.error = e
             cstate.ok = False
@@ -239,6 +241,12 @@ def main():
     # no-op and there was no way to get a windowed start.)
     ap.add_argument("--maximized", action="store_true", default=False)
     args = ap.parse_args()
+
+    # Offline before any torch/ultralytics import (warmup thread): TRT compile must
+    # not block on HuggingFace / Torch Hub / telemetry. Frozen rthook already set these;
+    # setdefault here covers the dev entry too.
+    from sumu.offline_env import apply_offline_runtime_env
+    apply_offline_runtime_env()
 
     # Single-instance handoff (before ANY heavy init): if another sumu process is alive --
     # playing, or close-parked with its models still warm -- forward our video (or a bare
@@ -718,6 +726,9 @@ def main():
             # restorer onto TRT on this main thread -- a single atomic attribute set, see
             # BasicvsrppMosaicRestorer.activate_trt), then derive what the first-screen compile
             # prompt should show this tick.
+            cs_running = cs_done = cs_ok = False
+            cs_split = cs_error = None
+            cs_step = cs_total = 0
             if compile_state is not None:
                 with compile_state.lock:
                     cs_running = compile_state.running
@@ -726,6 +737,7 @@ def main():
                     cs_split = compile_state.split
                     cs_step = compile_state.step
                     cs_total = compile_state.total
+                    cs_error = compile_state.error
                 if cs_done and cs_ok and cs_split is not None:
                     # warm_models[1] is the same restorer object the (possibly already built)
                     # scheduler holds, so this activates TRT live -- no scheduler rebuild.
@@ -766,9 +778,14 @@ def main():
                 )
                 compile_step, compile_total = cs_step, cs_total
             elif compile_state is not None and cs_done and not cs_ok:
-                compile_ui_state, compile_progress, compile_ui_text = (
-                    _COMPILE_UI_FAILED, 0.0, i18n_mod.t("compile_failed")
-                )
+                err = ""
+                if cs_error is not None:
+                    err = str(cs_error).strip().splitlines()[0][:180]
+                compile_ui_text = i18n_mod.t("compile_failed")
+                if err:
+                    compile_ui_text = f"{compile_ui_text}\n{err}"
+                compile_ui_text = f"{compile_ui_text}\n{i18n_mod.t('compile_failed_hint')}"
+                compile_ui_state, compile_progress = _COMPILE_UI_FAILED, 0.0
                 compile_step, compile_total = 0, 0
             elif compile_requested:
                 # Latched click, waiting on warmup/model readiness before the compile thread can

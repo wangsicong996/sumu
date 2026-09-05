@@ -25,9 +25,25 @@ if(MSVC)
   add_compile_options(/W3 /EHsc /utf-8)
 endif()
 
-set(CUDA_TOOLKIT_ROOT "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3" CACHE PATH "CUDA toolkit root (driver API headers/import lib only, no nvcc)")
 set(FFMPEG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../spikes/spike0_d3d11_present/third_party/ffmpeg" CACHE PATH "FFmpeg dev package root (reused from spike0, not duplicated)")
 set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui" CACHE PATH "Vendored Dear ImGui root (see third_party/imgui/README.sumu.md)")
+
+# Driver-API headers/import lib only (no nvcc). Prefer CUDA_PATH (CI / Jimver toolkit),
+# then a version that actually exists on disk, then the historical default.
+# `set(... CACHE PATH)` does not override a -DCUDA_TOOLKIT_ROOT= from the command line.
+set(_cuda_default "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3")
+if(DEFINED ENV{CUDA_PATH} AND EXISTS "$ENV{CUDA_PATH}/lib/x64/cuda.lib")
+  set(_cuda_default "$ENV{CUDA_PATH}")
+else()
+  foreach(_ver IN ITEMS v13.3 v12.8 v12.9 v12.6 v12.4)
+    set(_cand "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/${_ver}")
+    if(EXISTS "${_cand}/lib/x64/cuda.lib")
+      set(_cuda_default "${_cand}")
+      break()
+    endif()
+  endforeach()
+endif()
+set(CUDA_TOOLKIT_ROOT "${_cuda_default}" CACHE PATH "CUDA toolkit root (driver API headers/import lib only, no nvcc)")
 
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
 find_package(pybind11 CONFIG REQUIRED)

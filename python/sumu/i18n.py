@@ -64,6 +64,7 @@ REQUIRED_KEYS: tuple[str, ...] = (
     "warmup_status",
     "compile_running",
     "compile_failed",
+    "compile_failed_hint",
     "compile_preparing",
     "compile_prompt",
     "stream_server",

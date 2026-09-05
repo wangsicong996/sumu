@@ -1,0 +1,204 @@
+# SPDX-FileCopyrightText: sumu Authors
+# SPDX-License-Identifier: AGPL-3.0
+#
+# Build the Windows onedir bundle, split it into 7-Zip volumes (part1 / part2 / …)
+# under GitHub's 2 GiB-per-asset cap, and upload them to a GitHub Release.
+#
+# Triggers:
+#   - push of a v* tag (e.g. v0.3.4)
+#   - workflow_dispatch (manual; optional tag / prerelease)
+#
+# The runner is Windows because native/ is D3D11 + MSVC. GitHub-hosted
+# windows-2022 has no NVIDIA GPU, so smoke is skipped there; TRT engines are
+# compiled on the user's machine at first launch (offline, from bundled
+# TensorRT builder + nvrtc).
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.3.4). Empty = use pyproject version as vX.Y.Z."
+        required: false
+        type: string
+      prerelease:
+        description: "Mark the GitHub Release as a pre-release"
+        required: false
+        type: boolean
+        default: true
+      skip_smoke:
+        description: "Skip frozen-exe smoke (required on GitHub-hosted: no NVIDIA GPU)"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version / tag
+        id: meta
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag }}"
+          if (-not $tag) { $tag = "${{ github.ref_name }}" }
+          if ($tag -notmatch '^v') {
+            $toml = Get-Content pyproject.toml -Raw
+            if ($toml -match '(?m)^version\s*=\s*"([^"]+)"') {
+              $tag = "v$($Matches[1])"
+            } else {
+              throw "could not parse version from pyproject.toml"
+            }
+          }
+          $ver = $tag.TrimStart("v")
+          echo "tag=$tag" >> $env:GITHUB_OUTPUT
+          echo "version=$ver" >> $env:GITHUB_OUTPUT
+          echo "Resolved tag=$tag version=$ver"
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install Ninja + 7-Zip
+        shell: pwsh
+        run: |
+          choco install ninja 7zip -y --no-progress
+          & "$env:ProgramFiles\7-Zip\7z.exe" | Select-Object -First 1
+          ninja --version
+
+      - name: Install CUDA toolkit (driver-API headers + cuda.lib)
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: "12.8.1"
+          method: network
+          sub-packages: '["nvcc"]'
+          use-github-cache: true
+
+      - name: Verify CUDA driver-API lib
+        shell: pwsh
+        run: |
+          Write-Host "CUDA_PATH=$env:CUDA_PATH"
+          $lib = Join-Path $env:CUDA_PATH "lib\x64\cuda.lib"
+          if (-not (Test-Path $lib)) { throw "cuda.lib missing at $lib" }
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{N="FreeGB";E={[math]::Round($_.Free/1GB,1)}}
+
+      - name: Fetch FFmpeg + model weights
+        shell: pwsh
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          powershell -ExecutionPolicy Bypass -File scripts/fetch_ci_deps.ps1
+
+      - name: uv sync (torch cu128 + TensorRT)
+        shell: pwsh
+        run: |
+          uv sync --frozen
+          .\.venv\Scripts\python.exe -c "import torch, tensorrt, torch_tensorrt; print(torch.__version__, tensorrt.__version__)"
+
+      - name: Apply third-party patches
+        shell: pwsh
+        run: |
+          $bash = "$env:ProgramFiles\Git\bin\bash.exe"
+          & $bash scripts/apply_patches.sh
+          if ($LASTEXITCODE -ne 0) { throw "apply_patches.sh failed" }
+
+      - name: Build native sumu_core.pyd
+        shell: cmd
+        run: native\build.bat
+
+      - name: Freeze onedir (PyInstaller)
+        shell: pwsh
+        run: |
+          $skip = "${{ github.event.inputs.skip_smoke }}"
+          # Tag-push has no inputs: always skip smoke on github-hosted (no GPU).
+          $skipSmoke = $true
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and $skip -eq "false") {
+            $skipSmoke = $false
+          }
+          $weights = Join-Path $pwd "model_weights"
+          $args = @(
+            "-ExecutionPolicy", "Bypass",
+            "-File", "scripts/build_dist.ps1",
+            "-SkipNative",
+            "-WeightsSrc", $weights
+          )
+          if ($skipSmoke) { $args += "-SkipSmoke" }
+          powershell @args
+          if ($LASTEXITCODE -ne 0) { throw "build_dist.ps1 failed" }
+
+      - name: Split into 7z volumes (part1 / part2 / …)
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File scripts/package_release.ps1 -Version "${{ steps.meta.outputs.version }}"
+
+      - name: Free disk before upload
+        shell: pwsh
+        run: |
+          if (Test-Path dist\sumu) { Remove-Item -Recurse -Force dist\sumu }
+          if (Test-Path build) { Remove-Item -Recurse -Force build }
+          if (Test-Path .venv) { Remove-Item -Recurse -Force .venv }
+
+      - name: Create GitHub Release and upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $ver = "${{ steps.meta.outputs.version }}"
+          $pre = "${{ github.event.inputs.prerelease }}"
+          $isPre = $true
+          if ("${{ github.event_name }}" -eq "push") { $isPre = $false }
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and $pre -eq "false") { $isPre = $false }
+
+          $notesPath = Join-Path $pwd "dist\release\RELEASE_NOTES.md"
+          @(
+            "## sumu $ver (Windows x64)",
+            "",
+            "### 下载 / Download",
+            "请下载 **全部** 分卷（``.7z.001`` = part1，``.7z.002`` = part2，…）到同一目录，用 [7-Zip](https://www.7-zip.org/) 打开 ``sumu-$ver-windows-x64.7z.001`` 解压。",
+            "",
+            "Download **every** volume (``.7z.001`` = part1, ``.7z.002`` = part2, …) into the same folder, then open ``sumu-$ver-windows-x64.7z.001`` with [7-Zip](https://www.7-zip.org/).",
+            "",
+            "### 首次启动 / First launch",
+            "解压后运行 ``sumu.exe``。首次点击「编译加速引擎」会在 **本机 GPU 上离线编译** TensorRT 子引擎（数分钟，不访问网络）。编完落盘 ``model_weights\``，下次启动直接命中。",
+            "",
+            "After extracting, run sumu.exe. Click Compile acceleration engines once; TensorRT sub-engines are built offline on this GPU (a few minutes, no network) and cached under model_weights.",
+            "",
+            "引擎绑定 GPU 架构 + TensorRT 版本 + 精度 + OS，不能跨机复用。",
+            "",
+            "Engines are bound to GPU arch + TensorRT version + precision + OS and are not portable across machines."
+          ) | Set-Content -Path $notesPath -Encoding utf8
+
+          $files = @(Get-ChildItem dist\release -File | Where-Object { $_.Name -ne "RELEASE_NOTES.md" } | ForEach-Object { $_.FullName })
+          $ghArgs = @("release", "create", $tag, "--title", "sumu $ver", "--notes-file", $notesPath)
+          if ($isPre) { $ghArgs += "--prerelease" }
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $ghArgs += "--target", "${{ github.sha }}"
+          }
+          $ghArgs += $files
+          & gh @ghArgs
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }

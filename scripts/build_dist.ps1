@@ -129,10 +129,13 @@ if ($FastFreeze) {
     Copy-Item -Path $builtExe -Destination (Join-Path $distDir "sumu.exe") -Force
     # native ext + ffmpeg DLLs land in _internal\ (see COLLECT dest logic) -- refresh
     # them directly too, since -FastFreeze never re-runs COLLECT to pick them up.
+    # Glob av*/sw*.dll instead of pinning sonames (BtbN FFmpeg bumps them).
     $nativeSumuDir = Join-Path $RepoRoot "python\sumu"
-    foreach ($f in @("sumu_core.cp313-win_amd64.pyd", "avcodec-63.dll", "avformat-63.dll", "avutil-61.dll",
-                     "swresample-7.dll", "avdevice-63.dll", "avfilter-12.dll", "swscale-10.dll")) {
-        Copy-Item -Path (Join-Path $nativeSumuDir $f) -Destination (Join-Path $internalDir $f) -Force
+    Copy-Item -Path (Join-Path $nativeSumuDir "sumu_core.cp313-win_amd64.pyd") -Destination (Join-Path $internalDir "sumu_core.cp313-win_amd64.pyd") -Force
+    Get-ChildItem -Path $nativeSumuDir -File | Where-Object {
+        $_.Name -match '^(av|sw).+\.dll$'
+    } | ForEach-Object {
+        Copy-Item -Path $_.FullName -Destination (Join-Path $internalDir $_.Name) -Force
     }
     Write-Host "fast freeze OK: $distDir (sumu.exe relinked, _internal left untouched)" -ForegroundColor Green
 } else {
@@ -143,6 +146,13 @@ if ($FastFreeze) {
     }
     Write-Host "freeze OK: $distDir" -ForegroundColor Green
 }
+
+# Stage TensorRT engine-build DLLs (nvinfer_builder_resource, nvrtc 12.0 alias).
+# Must run after both full COLLECT and -FastFreeze: FastFreeze does not re-copy
+# _internal, but the copies are cheap and fill any hole a previous freeze left.
+Write-Host "== staging TRT compile-time runtime (scripts/stage_trt_compile_runtime.py) ==" -ForegroundColor Cyan
+Invoke-Native "`"$RepoRoot\.venv\Scripts\python.exe`" scripts/stage_trt_compile_runtime.py `"$internalDir`"" "scripts/stage_trt_compile_runtime.py failed" | Out-Null
+Write-Host "TRT compile runtime staged OK" -ForegroundColor Green
 
 
 
@@ -168,13 +178,10 @@ foreach ($f in $weightFiles) {
     Copy-Item -Path $src -Destination (Join-Path $weightsDst $f) -Force
 }
 
-# TRT sub-engines are deliberately NOT bundled. A hardware_compatible=False engine only
-# deserializes on the exact GPU arch / TensorRT version / precision / OS it was built for
-# (filename tag e.g. sm89.trt1012.fp16.win), so a prebuilt engine only helps identical hardware.
-# Instead every install compiles its own on first run, driven by the in-app first-screen "编译加速
-# 引擎" prompt (see python/sumu/app.py's compile state machine). This keeps the package ~520MB
-# smaller and means the first-run compile path is what everyone actually exercises.
-Write-Host "weights staged OK: $weightsDst (TRT engines compiled on first run, not bundled)" -ForegroundColor Green
+# TRT *engines* are deliberately NOT bundled (hardware_compatible=False, bound to GPU arch /
+# TRT version / precision / OS). The compile-time *runtime* (builder-resource DLL, nvrtc) IS
+# bundled so the first-screen "编译加速引擎" button completes fully offline on the user's GPU.
+Write-Host "weights staged OK: $weightsDst (TRT engines compiled locally on first run, not bundled)" -ForegroundColor Green
 
 # AGPL-3.0 requires that anyone you convey the binary to also gets a copy of the license
 # (section 4). Stage it next to the exe so it travels with whatever archive is made from

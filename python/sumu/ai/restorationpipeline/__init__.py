@@ -99,8 +99,9 @@ def compile_and_activate_trt(res_model, mosaic_restoration_model_path: str, devi
     Uses the SAME max_clip_size (BASICVSRPP_TRT_MAX_CLIP_SIZE) the loader looks up, so the
     engines this writes are exactly the ones a subsequent load-only startup will find. Per-engine
     progress ("Compiling sub-engine i/6…") flows through report_load_progress() to whatever
-    callback the caller registered. Returns the split forward, or None if compilation was skipped
-    (e.g. non-cuda / fp32 / VRAM too low) or the freshly-written engines failed to load.
+    callback the caller registered. Returns the split forward. Raises ``RuntimeError`` if
+    compilation was skipped (e.g. VRAM too low) or the freshly-written engines failed to load
+    — the GUI compile worker catches that and surfaces it on the first-screen prompt.
     """
     from sumu.ai.restorationpipeline.basicvsrpp_trt_compilation import basicvsrpp_startup_policy
     from sumu.ai.restorationpipeline.basicvsrpp_sub_engines import create_split_forward
@@ -111,12 +112,19 @@ def compile_and_activate_trt(res_model, mosaic_restoration_model_path: str, devi
         max_clip_size=BASICVSRPP_TRT_MAX_CLIP_SIZE, optimization_level=3,
     )
     if not ok:
-        logger.warning("On-demand TRT compile did not produce usable engines; staying on PyTorch path.")
-        return None
-    return create_split_forward(
+        raise RuntimeError(
+            "TensorRT compile finished but usable engines were not produced. "
+            "See sumu.log for TensorRT ERROR lines."
+        )
+    split = create_split_forward(
         res_model.model, mosaic_restoration_model_path, device, fp16,
         max_clip_size=BASICVSRPP_TRT_MAX_CLIP_SIZE,
     )
+    if split is None:
+        raise RuntimeError(
+            "TensorRT engines were written but failed to load. See sumu.log."
+        )
+    return split
 
 
 def _maybe_build_trt_split_forward(model, mosaic_restoration_model_path: str, device: torch.device, fp16: bool,

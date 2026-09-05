@@ -68,17 +68,19 @@ test_video*.mp4          本地测试素材 1080p30 / 4K60 HEVC / 2.1GB 长片�
 
 | 工具 | 用途 |
 |---|---|
-| `cmd /c "native\build.bat"` | **唯一 native 构建入口**：source vcvars64 + CMake + Ninja，产物 `sumu_core.*.pyd` + FFmpeg DLL 落 `python/sumu/`。先杀残留 python 进程（关窗驻留会锁 pyd）、hardcode 了 `.venv` 路径；**勿手拼 ninja/cmake**（sandbox 无 vcvars，会锁死 build 目录） |
+| `cmd /c "native\build.bat"` | **唯一 native 构建入口**：自动找 VS2022 vcvars64（BuildTools / Enterprise / Community）+ CMake + Ninja，产物 `sumu_core.*.pyd` + FFmpeg DLL 落 `python/sumu/`。Python 取仓库 `.venv`（可用 `SUMU_PYTHON` 覆盖）。先杀残留 python 进程（关窗驻留会锁 pyd）；**勿手拼 ninja/cmake**（sandbox 无 vcvars，会锁死 build 目录） |
 | `uv sync` | 安装 Python 依赖（镜像已配在 `pyproject.toml`） |
 | `bash scripts/apply_patches.sh` | 给 .venv 打 ultralytics/mmengine 运行时补丁（重装这两包后须重跑） |
 | lada HuggingFace 下载两权重 → `model_weights/` | 权重目录 gitignored，不随包分发 |
 | `.venv\Scripts\python.exe scripts\play.py [video]` | dev 日常运行入口（VSCode task `sumu: run (dev)`）；不带 video 弹「打开文件 / 打开 URL」 |
-| `scripts/sumu_main.py` | PyInstaller 冻结入口（窗口化，stdout/stderr 重定向 `sumu.log`） |
-| `powershell -ExecutionPolicy Bypass -File scripts\build_dist.ps1` | 打包 onedir → `dist/sumu/`（≈6.9GB）；`-SkipNative` / `-FastFreeze` / `-SkipSmoke` 见 `docs/packaging.md` |
+| `scripts/sumu_main.py` | PyInstaller 冻结入口（GUI + AllocConsole 系统控制台，stdout/stderr 同时写控制台和 `sumu.log`） |
+| `powershell -ExecutionPolicy Bypass -File scripts\build_dist.ps1` | 打包 onedir → `dist/sumu/`（≈6.9GB，含 TRT 编译期运行时）；`-SkipNative` / `-FastFreeze` / `-SkipSmoke` 见 `docs/packaging.md` |
+| `powershell -File scripts\package_release.ps1` | 把 `dist\sumu` 打成 7z 分卷（`.7z.001`=part1，`.7z.002`=part2）→ `dist\release\` |
+| `.github/workflows/release.yml` | 推 `v*` tag 或手动 Actions：构建 → 分卷 → 上传 GitHub Release |
 
 > **沙箱受阻不重试**：在受限沙箱里 `build.bat` 可能因 WMI 进程枚举被拒（`Get-CimInstance 拒绝访问`，杀不掉驻留 python → 锁住 `sumu_core.*.pyd`）或 ninja 子进程/管道被拦而卡死。一旦出现访问拒绝 / `[sandbox: ...]` / ninja 长时间 0 CPU 且 `sumu_core.*.pyd` 未刷新，**不要换命令重试、不要手拼 ninja/cmake**——`job_kill` 清理残留进程后如实报告，交由用户在本机跑 `cmd /c "native\build.bat"` 验证编译。
 
-> TRT 引擎不随包分发（绑定 GPU 架构+TRT 版本+精度+OS，首启自编译、编前 eager 回退约 3× 慢）。Web 串流 / 离线导出还需带 NVENC 的 `ffmpeg.exe` 在 PATH 上。
+> TRT 引擎不随包分发（绑定 GPU 架构+TRT 版本+精度+OS，用户机离线自编译；分发包含 builder-resource / NVRTC）。Web 串流 / 离线导出还需带 NVENC 的 `ffmpeg.exe` 在 PATH 上。
 
 ### 验证与压测
 
