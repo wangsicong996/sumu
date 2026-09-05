@@ -90,20 +90,19 @@ jobs:
           & "$env:ProgramFiles\7-Zip\7z.exe" | Select-Object -First 1
           ninja --version
 
-      - name: Install CUDA toolkit (driver-API headers + cuda.lib)
+      - name: Install CUDA toolkit (nvcc + cudart; driver lib filled in next step)
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: "12.8.1"
           method: network
-          sub-packages: '["nvcc"]'
+          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
           use-github-cache: true
 
-      - name: Verify CUDA driver-API lib
+      - name: Ensure CUDA driver-API headers + cuda.lib
         shell: pwsh
         run: |
           Write-Host "CUDA_PATH=$env:CUDA_PATH"
-          $lib = Join-Path $env:CUDA_PATH "lib\x64\cuda.lib"
-          if (-not (Test-Path $lib)) { throw "cuda.lib missing at $lib" }
+          powershell -ExecutionPolicy Bypass -File scripts/ensure_cuda_driver_lib.ps1
           Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{N="FreeGB";E={[math]::Round($_.Free/1GB,1)}}
 
       - name: Fetch FFmpeg + model weights
