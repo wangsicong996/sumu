@@ -105,7 +105,7 @@ def compile_and_save_torchtrt_dynamo(
     """
     import torch_tensorrt  # type: ignore[import-not-found]
     # Don't swallow TRT ERROR during compile: the frozen GUI redirects stderr to sumu.log,
-    # which is the only diagnostic when the "compile acceleration engines" button fails.
+    # which is the diagnostic when GUI-startup compile fails.
     _mute_torch_tensorrt(swallow=False)
 
     has_dynamic = any(isinstance(inp, torch_tensorrt.Input) for inp in inputs)

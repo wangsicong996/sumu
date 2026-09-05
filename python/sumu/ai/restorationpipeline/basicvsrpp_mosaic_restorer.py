@@ -18,12 +18,12 @@ class BasicvsrppMosaicRestorer:
     def uses_trt(self) -> bool:
         """True when restore() runs the compiled TensorRT split forward rather than the
         PyTorch eager model. Consumed by the daily player's startup UX to decide whether to
-        offer the "compile acceleration engines" prompt (engines absent -> eager -> offer it)."""
+        offer the compile-retry UI (engines absent -> eager -> auto-compile at GUI start)."""
         return self._split_forward is not None
 
     def activate_trt(self, split_forward) -> None:
         """Swap this restorer onto the compiled TensorRT split forward at runtime (called on the
-        main thread once an on-demand compile finishes). Assigning the single attribute is atomic
+        main thread once a GUI-startup compile finishes). Assigning the single attribute is atomic
         under the GIL, so a scheduler thread mid-restore() keeps running on the eager model and
         the next restore() picks up TRT -- no scheduler teardown/rebuild needed."""
         self._split_forward = split_forward

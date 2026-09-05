@@ -6,8 +6,8 @@
 #   - nvinfer_builder_resource_*.dll (LoadLibrary at engine-build time, not a PE import)
 #   - nvrtc64_120_0.dll (ctypes lookup uses the CUDA 12.0 basename; torch cu128
 #     ships nvrtc64_128_0.dll)
-# Without these, clicking "compile acceleration engines" fails on a machine with
-# no CUDA toolkit and no network -- which is every end-user install.
+# Without these, GUI-startup TRT compile fails on a machine with no CUDA toolkit
+# and no network -- which is every end-user install.
 from __future__ import annotations
 
 import glob

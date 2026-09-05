@@ -14,8 +14,8 @@
 # before calling main().
 #
 # Startup-UX (model-warmup-in-background): unlike the old version of this module, main() no
-# longer blocks the main thread on model warmup (torch import + build_models(), which can take
-# several seconds for TRT compilation) before showing anything. The window appears immediately
+# longer blocks the main thread on model warmup (torch import + build_models()) before
+# showing anything. The window appears immediately
 # and stays responsive (pump_messages() every tick) while warmup runs on a background daemon
 # thread; an open/drop-file prompt is shown until the user picks a file, and a small
 # "正在预热模型…" status float (native build_status_float(), driven by set_status_text()) tracks
@@ -67,8 +67,9 @@ class _WarmupState:
         self.meta_fn = None     # get_video_meta_data
         # TRT startup-UX handoff. trt_applicable: this machine can run TRT at all (cuda + fp16).
         # trt_active: engines were found + loaded (load-only warmup) so the restorer already runs
-        # TRT. When applicable but not active, engines are absent -> app offers the on-demand
-        # "compile acceleration engines" prompt. res_path/device/fp16 are what that compile needs.
+        # TRT. When applicable but not active, engines are absent -> GUI startup auto-starts an
+        # offline compile (progress on the first screen; retry only on failure).
+        # res_path/device/fp16 are what that compile needs.
         self.trt_applicable = False
         self.trt_active = False
         self.res_path = None
@@ -77,10 +78,10 @@ class _WarmupState:
 
 
 class _CompileState:
-    """Cross-thread handoff for the on-demand TRT compile thread (spawned when the user clicks the
-    first-screen 'compile acceleration engines' button). The compile thread writes progress
-    (step/total, text) and the terminal result (split/ok/error); the main loop reads it every tick
-    to drive the native compile UI and, on success, hot-swaps the restorer onto TRT."""
+    """Cross-thread handoff for the TRT compile thread (auto-started at GUI launch when engines
+    are missing; retry click after a failure). The compile thread writes progress (step/total,
+    text) and the terminal result (split/ok/error); the main loop reads it every tick to drive
+    the native compile UI and, on success, hot-swaps the restorer onto TRT."""
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -191,11 +192,10 @@ def _warmup_worker(state: "_WarmupState") -> None:
               f"{torch.cuda.get_device_name(0) if device.type == 'cuda' else ''}", file=sys.stderr)
 
         t_load0 = time.perf_counter()
-        # Load-only: use precompiled TRT engines if this machine already has them, otherwise stay
-        # on the eager PyTorch path. We deliberately do NOT compile here anymore -- compilation is
-        # a multi-minute blocking step now driven explicitly by the user via the first-screen
-        # "compile acceleration engines" prompt (see the main loop's compile state machine), so a
-        # fresh machine gets a fast, responsive startup on eager instead of a silent long stall.
+        # Load-only: use TRT engines if this machine already compiled them, otherwise stay on
+        # eager PyTorch. Do NOT compile on this thread -- a multi-minute stall would freeze
+        # warmup and delay the Scheduler. GUI startup auto-spawns a compile worker once models
+        # are ready (see the main loop); GitHub-hosted CI never hits this path (no GPU).
         det_model, res_model, pad_mode = build_models(device, fp16, allow_trt_compile=False)
         print(f"== load_models == {time.perf_counter()-t_load0:.2f}s pad_mode={pad_mode}",
               file=sys.stderr)
@@ -511,9 +511,9 @@ def main():
         player.set_fps_div(div)
         return div
 
-    # On-demand TRT compile (first-screen prompt). compile_state is the live handoff while a
-    # compile runs (None otherwise); trt_activated flips True once engines have been hot-swapped
-    # in (either found at warmup or compiled+activated here), which is what hides the prompt.
+    # TRT compile (auto at GUI start if engines are missing). compile_state is the live handoff
+    # while a compile runs (None otherwise); trt_activated flips True once engines have been
+    # hot-swapped in (found at warmup or compiled+activated here), which hides the prompt.
     compile_state = None
     trt_activated = False
 
@@ -543,7 +543,10 @@ def main():
         print(f"== trt == fast presence probe failed ({e!r}); assuming engines absent", file=sys.stderr)
         trt_present_fast = False
     trt_applicable_guess = settings.trt_applicable if settings.trt_applicable is not None else True
-    compile_requested = False   # latches a first-screen "compile" click that lands before warmup
+    # Auto-compile on this machine at GUI start: latch before warmup so the first screen shows
+    # "preparing" immediately. Retry after failure re-latches via the compile_engine intent.
+    # GitHub CI never runs the GUI, so it never compiles engines.
+    compile_requested = bool(trt_applicable_guess and not trt_present_fast)
     trt_reconciled = False      # flips once warmup's real applicable/active have been folded in
 
     def _report_open_failed(path, err):
@@ -757,6 +760,10 @@ def main():
                 if settings.trt_applicable != warm_trt_applicable:
                     settings.trt_applicable = warm_trt_applicable
                     settings_mod.save(settings)
+                # Fast disk glob can disagree with a real load (stale/corrupt engines). If this
+                # machine can run TRT and warmup did not activate engines, start compiling.
+                if warm_trt_applicable and not warm_trt_active:
+                    compile_requested = True
 
             # Effective applicability/presence: warmup's real values once ready, else the torch-free
             # startup guesses. This is what lets the prompt render correctly from frame 1 instead of
@@ -765,8 +772,9 @@ def main():
             trt_present_eff = warm_trt_active if warm_ready else trt_present_fast
 
             if warm_error is not None or not trt_applicable_eff or trt_present_eff or trt_activated:
-                # warm_error also hides the prompt: no models => nothing to compile, so a latched
-                # compile_requested must not strand the first screen on a forever "preparing" bar.
+                # Nothing to compile (or already done). Drop a stale auto-latch so a non-Nvidia
+                # box / already-cached engines don't sit on "preparing" forever.
+                compile_requested = False
                 compile_ui_state, compile_progress, compile_ui_text = _COMPILE_UI_HIDDEN, 0.0, ""
                 compile_step, compile_total = 0, 0
             elif compile_state is not None and cs_running:
@@ -788,9 +796,9 @@ def main():
                 compile_ui_state, compile_progress = _COMPILE_UI_FAILED, 0.0
                 compile_step, compile_total = 0, 0
             elif compile_requested:
-                # Latched click, waiting on warmup/model readiness before the compile thread can
-                # actually spawn (below) -- show the progress bar right away so the button
-                # disappears on the very next tick instead of staying clickable while queued.
+                # Auto-latched (or retry click) waiting on warmup before the compile thread can
+                # spawn -- show the progress bar immediately so the first screen is never a
+                # click-to-start button on a fresh machine.
                 compile_ui_state = _COMPILE_UI_RUNNING
                 compile_progress = 0.0
                 compile_ui_text = i18n_mod.t("compile_preparing")
@@ -892,13 +900,9 @@ def main():
             elif intents.get("export_exit"):
                 _exit_export_mode()
 
-            # First-screen "compile acceleration engines" button (or "retry" after a failure).
-            # The prompt now shows from frame 1 (before warmup finishes), so a click can land
-            # before the models are loaded -- but the compile needs the loaded eager restorer
-            # (warm_models[1]). So a click only LATCHES the request; the spawn below fires as soon
-            # as warmup is ready (and TRT is applicable, engines aren't already active, nothing is
-            # already compiling). This way "click then it works" holds even for an eager clicker,
-            # instead of the click silently no-op'ing until warmup catches up.
+            # Retry after a failed compile (first screen / settings). Auto-start already latched
+            # compile_requested at launch; a retry re-latches. Spawn waits for warmup because the
+            # compile needs the loaded eager restorer (warm_models[1]).
             if intents.get("compile_engine"):
                 compile_requested = True
             compile_busy = compile_state is not None and compile_state.running
@@ -913,7 +917,7 @@ def main():
                     args=(compile_state, warm_models[1], warm_res_path, warm_device, warm_fp16),
                     name="sumu-trt-compile", daemon=True,
                 ).start()
-                print("== trt == on-demand compile started", file=sys.stderr)
+                print("== trt == startup compile started", file=sys.stderr)
 
             opening = open_state is not None
             if intents["toggle_play"] and not opening:

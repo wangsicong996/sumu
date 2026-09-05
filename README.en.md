@@ -91,12 +91,12 @@ These are non-negotiable for sumu (full design notes in [DESIGN.md](DESIGN.md)):
    > The developer uses Chinese mirrors (NJU for cu128, Tsinghua for PyPI) out of habit. Non-Chinese developers should switch back to the official PyPI / PyTorch indexes.
 3. **Third-party patches**: `bash scripts/apply_patches.sh` (runtime patches for ultralytics / mmengine).
 4. **Model weights**: download `lada_mosaic_restoration_model_generic_v1.2.pth` and `lada_mosaic_detection_model_v4_fast.pt` from [lada HuggingFace](https://huggingface.co/ladaapp/lada) and place them under `model_weights/`.
-5. **Run**: VSCode task `sumu: run (dev)`, or `.venv\Scripts\python.exe scripts/play.py`. On the first run without TRT engines, falls back to eager; a compile prompt appears on the first screen.
+5. **Run**: VSCode task `sumu: run (dev)`, or `.venv\Scripts\python.exe scripts/play.py`. On the first run without TRT engines, falls back to eager; GUI start auto-compiles engines offline.
 6. **Package for distribution**: `powershell -ExecutionPolicy Bypass -File scripts/build_dist.ps1`. Outputs `dist/sumu/` (≈6.9GB, no TRT *engines*, but with the TensorRT builder / NVRTC needed for offline compile). Split for GitHub: `scripts/package_release.ps1` (`.7z.001` = part1, `.7z.002` = part2). Pushing a `v*` tag or running the `release` GitHub Action builds and uploads a Release. See [docs/packaging.md](docs/packaging.md).
 
 > Plain local real-time playback only needs steps 1–5; **Web streaming / offline export** additionally need an NVENC-enabled `ffmpeg.exe` on PATH (`ffprobe.exe` was already a soft dependency).
 
-> **TensorRT engines are not shipped, but the compile-time runtime is**: engines are bound to GPU architecture + TRT version + precision + OS and cannot be redistributed across machines. Each machine compiles its own **offline** on first use (no network) — falls back to eager (~3× slower) until then, a "Compile acceleration engine" prompt appears on the first screen, hot-swaps in on completion and is cached to disk. Non-NVIDIA / non-fp16 machines never trigger compilation and always stay on eager. Failures land in `sumu.log`.
+> **TensorRT engines are not shipped, but the compile-time runtime is**: engines are bound to GPU architecture + TRT version + precision + OS and cannot be redistributed across machines. **GitHub CI does not compile engines.** Each machine compiles its own **offline** when the GUI starts (no network) — falls back to eager (~3× slower) until then, progress shows on the first screen, hot-swaps in on completion and is cached to disk. Non-NVIDIA / non-fp16 machines never trigger compilation and always stay on eager. Failures offer retry; details land in `sumu.log`.
 
 ## License
 

@@ -89,7 +89,7 @@ def load_models(
 
 
 def compile_and_activate_trt(res_model, mosaic_restoration_model_path: str, device, fp16: bool):
-    """On-demand TensorRT compile driven by the startup-UX prompt (not the passive load path).
+    """TensorRT compile for this machine, driven by GUI startup (not the passive load path).
 
     Blocks (minutes) compiling the 6 BasicVSR++ sub-engines for THIS machine's GPU arch /
     TRT version / precision, then builds a split forward bound to the already-loaded eager
@@ -101,7 +101,7 @@ def compile_and_activate_trt(res_model, mosaic_restoration_model_path: str, devi
     progress ("Compiling sub-engine i/6…") flows through report_load_progress() to whatever
     callback the caller registered. Returns the split forward. Raises ``RuntimeError`` if
     compilation was skipped (e.g. VRAM too low) or the freshly-written engines failed to load
-    — the GUI compile worker catches that and surfaces it on the first-screen prompt.
+    — the GUI compile worker catches that and surfaces it (retry on the first screen).
     """
     from sumu.ai.restorationpipeline.basicvsrpp_trt_compilation import basicvsrpp_startup_policy
     from sumu.ai.restorationpipeline.basicvsrpp_sub_engines import create_split_forward

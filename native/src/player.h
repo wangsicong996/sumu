@@ -204,9 +204,10 @@ struct UiIntents {
     // (hide window, keep the warm models for a fast reopen) and a real exit. See app.py's
     // park handling; with park_on_close_ unset WM_CLOSE/ESC keep their legacy quit behavior.
     bool close_request = false;
-    // First-screen "compile TRT acceleration engines" button (open-prompt overlay only). Python
-    // responds by spawning the blocking compile off the main thread and driving the compile UI
-    // via set_compile_ui(). Doubles as the "retry" click in the failed state.
+    // Retry after a failed TRT compile (first-screen overlay / settings). Python also
+    // auto-starts compile at GUI launch when engines are missing; this flag is the retry.
+    // Responds by spawning the blocking compile off the main thread and driving the
+    // compile UI via set_compile_ui().
     bool compile_engine = false;
     // Web-streaming server (Phase 2). The stream popup writes these; Python drains them.
     bool stream_start = false;

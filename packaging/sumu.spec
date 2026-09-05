@@ -91,6 +91,22 @@ for pkg in ("torch", "torchvision", "ultralytics", "cv2"):
 # builder-resource DLL that TensorRT LoadLibrary's at build time (not a PE import,
 # so collect_dynamic_libs often drops it). That is why a frozen "compile
 # acceleration engines" click used to fail without a CUDA toolkit / network.
+#
+# GitHub-hosted runners have no NVIDIA driver. torch_tensorrt's import path
+# evaluates CompilationSettings() → torch.cuda.current_device() and raises.
+# Patch only when CUDA is unavailable so freeze can still collect the package.
+try:
+    import torch as _torch
+    try:
+        _has_gpu = bool(_torch.cuda.is_available())
+    except Exception:
+        _has_gpu = False
+    if not _has_gpu:
+        _torch.cuda.current_device = lambda: 0  # noqa: E731
+        print("[sumu.spec] no CUDA driver; stubbed torch.cuda.current_device for collect")
+except Exception as e:  # noqa: BLE001
+    print(f"[sumu.spec] CUDA stub skipped: {e}")
+
 for pkg in ("torch_tensorrt", "tensorrt", "tensorrt_libs"):
     try:
         d, b, h = collect_all(pkg)

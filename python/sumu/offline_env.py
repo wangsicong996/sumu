@@ -1,10 +1,9 @@
 # SPDX-FileCopyrightText: sumu Authors
 # SPDX-License-Identifier: AGPL-3.0
 #
-# Freeze TensorRT compile + model load onto local files. The in-app "compile
-# acceleration engines" path must not phone HuggingFace / PyPI / Ultralytics /
-# Torch Hub: engines are built from the bundled torch-tensorrt + TensorRT
-# builder DLLs + the staged .pth/.pt weights.
+# Freeze TensorRT compile + model load onto local files. GUI-startup compile
+# must not phone HuggingFace / PyPI / Ultralytics / Torch Hub: engines are built
+# from the bundled torch-tensorrt + TensorRT builder DLLs + staged .pth/.pt.
 from __future__ import annotations
 
 import os

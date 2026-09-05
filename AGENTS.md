@@ -80,7 +80,7 @@ test_video*.mp4          本地测试素材 1080p30 / 4K60 HEVC / 2.1GB 长片�
 
 > **沙箱受阻不重试**：在受限沙箱里 `build.bat` 可能因 WMI 进程枚举被拒（`Get-CimInstance 拒绝访问`，杀不掉驻留 python → 锁住 `sumu_core.*.pyd`）或 ninja 子进程/管道被拦而卡死。一旦出现访问拒绝 / `[sandbox: ...]` / ninja 长时间 0 CPU 且 `sumu_core.*.pyd` 未刷新，**不要换命令重试、不要手拼 ninja/cmake**——`job_kill` 清理残留进程后如实报告，交由用户在本机跑 `cmd /c "native\build.bat"` 验证编译。
 
-> TRT 引擎不随包分发（绑定 GPU 架构+TRT 版本+精度+OS，用户机离线自编译；分发包含 builder-resource / NVRTC）。Web 串流 / 离线导出还需带 NVENC 的 `ffmpeg.exe` 在 PATH 上。
+> TRT 引擎不随包分发（绑定 GPU 架构+TRT 版本+精度+OS；**GitHub 不编译**，用户机 GUI 启动时离线自编译；分发包含 builder-resource / NVRTC）。Web 串流 / 离线导出还需带 NVENC 的 `ffmpeg.exe` 在 PATH 上。
 
 ### 验证与压测
 

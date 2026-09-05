@@ -114,7 +114,7 @@ class Settings:
     positions: dict[str, int] = field(default_factory=dict)
     # Cached "can this machine run TRT at all" (cuda + fp16). None = never determined (first run).
     # The daily player needs this on the MAIN thread, before the first overlay frame, to decide
-    # whether to show the first-screen "compile engines" prompt -- but the real check needs torch
+    # whether this machine should auto-compile TRT at GUI start -- but the real check needs torch
     # (torch.cuda.is_available()), which is exactly the multi-second startup cost we moved off the
     # main thread. So we cache the last run's answer (optimistic True on first run, since sumu
     # targets Nvidia) and reconcile against the real value once background warmup finishes.

@@ -10,8 +10,8 @@
 #
 # The runner is Windows because native/ is D3D11 + MSVC. GitHub-hosted
 # windows-2022 has no NVIDIA GPU, so smoke is skipped there; TRT engines are
-# compiled on the user's machine at first launch (offline, from bundled
-# TensorRT builder + nvrtc).
+# never compiled on GitHub. The user's machine compiles them at GUI start
+# (offline, from bundled TensorRT builder + nvrtc).
 name: release
 
 on:
@@ -116,7 +116,10 @@ jobs:
         shell: pwsh
         run: |
           uv sync --frozen
-          .\.venv\Scripts\python.exe -c "import torch, tensorrt, torch_tensorrt; print(torch.__version__, tensorrt.__version__)"
+          # GitHub-hosted runners have no NVIDIA driver. import torch_tensorrt
+          # eagerly calls torch.cuda.current_device() and raises. Prove wheels
+          # installed via metadata + import torch/tensorrt only.
+          .\.venv\Scripts\python.exe -c "import importlib.metadata as m, torch, tensorrt; print('torch', torch.__version__, 'cuda_available', torch.cuda.is_available()); print('tensorrt', tensorrt.__version__); print('torch-tensorrt', m.version('torch-tensorrt'))"
 
       - name: Apply third-party patches
         shell: pwsh

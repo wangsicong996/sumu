@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0
 #
 # One-off build-time measurement harness for the BasicVSR++ TensorRT sub-engines.
-# Compiles all 6 sub-engines with the exact settings the on-demand prompt uses
+# Compiles all 6 sub-engines with the exact settings GUI-startup compile uses
 # (optimization_level=3, max_clip_size=BASICVSRPP_TRT_MAX_CLIP_SIZE, workspace=free*0.9)
 # so the [trt-timing] lines reflect real player behavior.
 #
