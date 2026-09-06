@@ -180,6 +180,7 @@ hiddenimports += [
     "sumu.i18n",
     "sumu.offline_env",
     "sumu.ffmpeg_exe",
+    "sumu.win_console",
 ] + collect_submodules("sumu")
 
 # UI message catalogs (JSON). Embedded fallbacks in i18n.py cover a missing tree, but
@@ -206,19 +207,18 @@ if os.path.isdir(_native_sumu):
         if lower.endswith(".dll") and (lower.startswith("av") or lower.startswith("sw")):
             binaries += [(os.path.join(_native_sumu, name), ".")]
 
-# CLI ffmpeg/ffprobe for export + webstream (NVENC in the BtbN gpl-shared build).
-# FastFreeze skips COLLECT, so scripts/build_dist.ps1 also copies these into _internal.
-_ffmpeg_bin = os.path.join(ROOT, "spikes", "spike0_d3d11_present", "third_party", "ffmpeg", "bin")
-if os.path.isdir(_ffmpeg_bin):
+# CLI ffmpeg/ffprobe for export + webstream: static BtbN n8.1 gpl (NVENC SDK 13.0).
+# Master gpl-shared is 13.1 and fails on 13.0 drivers. FastFreeze skips COLLECT, so
+# scripts/build_dist.ps1 also copies these via scripts/stage_encoder_ffmpeg.ps1.
+_ffmpeg_cli = os.path.join(
+    ROOT, "spikes", "spike0_d3d11_present", "third_party", "ffmpeg-cli", "bin")
+if os.path.isdir(_ffmpeg_cli):
     for name in ("ffmpeg.exe", "ffprobe.exe"):
-        path = os.path.join(_ffmpeg_bin, name)
+        path = os.path.join(_ffmpeg_cli, name)
         if os.path.isfile(path):
-            binaries += [(path, ".")]
-    for name in sorted(os.listdir(_ffmpeg_bin)):
-        if name.lower().endswith(".dll"):
-            binaries += [(os.path.join(_ffmpeg_bin, name), ".")]
+            binaries += [(path, "ffmpeg-cli")]
 else:
-    print(f"[sumu.spec] WARN missing FFmpeg bin dir {_ffmpeg_bin}")
+    print(f"[sumu.spec] WARN missing encoder ffmpeg-cli dir {_ffmpeg_cli}")
 
 a = Analysis(
     [os.path.join(ROOT, "scripts", "sumu_main.py")],

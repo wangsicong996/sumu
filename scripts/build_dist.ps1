@@ -154,28 +154,18 @@ Write-Host "== staging TRT compile-time runtime (scripts/stage_trt_compile_runti
 Invoke-Native "`"$RepoRoot\.venv\Scripts\python.exe`" scripts/stage_trt_compile_runtime.py `"$internalDir`"" "scripts/stage_trt_compile_runtime.py failed" | Out-Null
 Write-Host "TRT compile runtime staged OK" -ForegroundColor Green
 
-# Stage CLI ffmpeg/ffprobe next to the shared DLLs in _internal. Native decode only
-# needs av*/sw*.dll; export/webstream shell out to ffmpeg.exe (h264_nvenc / hevc_nvenc).
-# FastFreeze skips COLLECT, so this copy must run after both freeze paths.
-Write-Host "== staging ffmpeg.exe / ffprobe.exe (BtbN gpl-shared) ==" -ForegroundColor Cyan
-$ffmpegBin = Join-Path $RepoRoot "spikes\spike0_d3d11_present\third_party\ffmpeg\bin"
-$ffmpegExe = Join-Path $ffmpegBin "ffmpeg.exe"
-if (-not (Test-Path $ffmpegExe)) {
-    Fail "ffmpeg.exe not found at $ffmpegExe -- export/stream need the BtbN FFmpeg tree (scripts/fetch_ci_deps.ps1)"
+# Stage a static n8.1 ffmpeg.exe for NVENC export (SDK 13.0). Do NOT reuse the
+# master gpl-shared ffmpeg.exe used for native decode -- that binary requires
+# NVENC API 13.1 and exits on 13.0 drivers.
+Write-Host "== staging encoder ffmpeg (BtbN n8.1 static gpl, NVENC SDK 13.0) ==" -ForegroundColor Cyan
+$ffmpegCliDest = Join-Path $internalDir "ffmpeg-cli"
+# Drop the previous freeze's master-shared ffmpeg.exe so the resolver cannot pick NVENC 13.1.
+Remove-Item -Path (Join-Path $internalDir "ffmpeg.exe"), (Join-Path $internalDir "ffprobe.exe") -ErrorAction SilentlyContinue
+& (Join-Path $RepoRoot "scripts\stage_encoder_ffmpeg.ps1") -DestDir $ffmpegCliDest
+if (-not (Test-Path (Join-Path $ffmpegCliDest "ffmpeg.exe"))) {
+    Fail "expected $ffmpegCliDest\ffmpeg.exe after stage_encoder_ffmpeg.ps1"
 }
-Copy-Item -Path $ffmpegExe -Destination (Join-Path $internalDir "ffmpeg.exe") -Force
-$ffprobeExe = Join-Path $ffmpegBin "ffprobe.exe"
-if (Test-Path $ffprobeExe) {
-    Copy-Item -Path $ffprobeExe -Destination (Join-Path $internalDir "ffprobe.exe") -Force
-} else {
-    Write-Host "WARN: ffprobe.exe missing at $ffprobeExe" -ForegroundColor Yellow
-}
-# ffmpeg.exe needs the full shared-lib set (avfilter/avdevice/postproc), not only the
-# av*/sw* subset native decode uses. Same tree as native; overwrite is identical files.
-Get-ChildItem -Path $ffmpegBin -File -Filter "*.dll" | ForEach-Object {
-    Copy-Item -Path $_.FullName -Destination (Join-Path $internalDir $_.Name) -Force
-}
-Write-Host "ffmpeg tools staged OK: $internalDir\ffmpeg.exe" -ForegroundColor Green
+Write-Host "encoder ffmpeg staged OK: $ffmpegCliDest\ffmpeg.exe" -ForegroundColor Green
 
 
 # --- 4. stage model weights next to the exe ---------------------------------

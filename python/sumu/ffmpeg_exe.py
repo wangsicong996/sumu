@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0
 """Resolve ``ffmpeg.exe`` / ``ffprobe.exe`` for export, webstream, and thumbnails.
 
-Frozen onedir stages both next to the FFmpeg shared DLLs in ``_internal``
-(``scripts/build_dist.ps1``). Daily playback does not need them. Dev falls back
-to PATH, then the spike0 BtbN tree used by the native build.
+Frozen onedir stages a **static** BtbN n8.1 ``ffmpeg.exe`` under ``_internal/ffmpeg-cli/``
+(NVENC SDK 13.0). That is a different tree from the master gpl-*shared* DLLs native
+decode uses -- master is built against NVENC 13.1 and fails on 13.0 drivers.
+Dev prefers ``spikes/.../ffmpeg-cli``, then PATH, then the shared spike0 ``ffmpeg/bin``.
 """
 from __future__ import annotations
 
@@ -21,26 +22,40 @@ def _exe_names(stem: str) -> tuple[str, ...]:
     return (stem,)
 
 
-def _frozen_dirs() -> list[str]:
-    if not getattr(sys, "frozen", False):
-        return []
-    dirs: list[str] = []
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        dirs.append(meipass)
-    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-    dirs.append(os.path.join(exe_dir, "_internal"))
-    dirs.append(exe_dir)
-    return dirs
+def _repo_cli_bin() -> str | None:
+    here = os.path.dirname(os.path.abspath(__file__))
+    cli = os.path.normpath(os.path.join(
+        here, "..", "..",
+        "spikes", "spike0_d3d11_present", "third_party", "ffmpeg-cli", "bin",
+    ))
+    return cli if os.path.isdir(cli) else None
 
 
-def _dev_ffmpeg_bin() -> str | None:
+def _repo_shared_bin() -> str | None:
     here = os.path.dirname(os.path.abspath(__file__))
     spike = os.path.normpath(os.path.join(
         here, "..", "..",
         "spikes", "spike0_d3d11_present", "third_party", "ffmpeg", "bin",
     ))
     return spike if os.path.isdir(spike) else None
+
+
+def _frozen_dirs() -> list[str]:
+    if not getattr(sys, "frozen", False):
+        return []
+    dirs: list[str] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    # Dedicated static CLI first -- must not pick up master-shared ffmpeg.exe
+    # sitting next to avcodec DLLs (NVENC 13.1).
+    if meipass:
+        dirs.append(os.path.join(meipass, "ffmpeg-cli"))
+        dirs.append(meipass)
+    dirs.append(os.path.join(exe_dir, "_internal", "ffmpeg-cli"))
+    dirs.append(os.path.join(exe_dir, "_internal"))
+    dirs.append(os.path.join(exe_dir, "ffmpeg-cli"))
+    dirs.append(exe_dir)
+    return dirs
 
 
 def _env_override(stem: str) -> str | None:
@@ -58,41 +73,34 @@ def _env_override(stem: str) -> str | None:
     return None
 
 
-def _search_folders(stem: str) -> list[str]:
-    folders: list[str] = []
-    folders.extend(_frozen_dirs())
-    sibling_stem = "ffprobe" if stem == "ffmpeg" else "ffmpeg"
-    sibling = shutil.which(sibling_stem)
-    if sibling:
-        folders.append(os.path.dirname(sibling))
-    dev = _dev_ffmpeg_bin()
-    if dev:
-        folders.append(dev)
-    return folders
-
-
 def _find(stem: str) -> str:
     override = _env_override(stem)
     if override:
         return override
-    # Frozen: prefer the bundled copy so a PATH ffmpeg without NVENC cannot win.
-    if getattr(sys, "frozen", False):
-        for folder in _frozen_dirs():
-            for name in _exe_names(stem):
-                cand = os.path.join(folder, name)
-                if os.path.isfile(cand):
-                    return cand
-    which = shutil.which(stem)
-    if which:
-        return which
+    # Prefer the SDK-13.0 static CLI (frozen bundle / repo ffmpeg-cli) over PATH.
+    # A PATH ffmpeg built against NVENC 13.1 fails on 13.0 drivers.
     seen: set[str] = set()
-    for folder in _search_folders(stem):
+    preferred: list[str] = []
+    preferred.extend(_frozen_dirs())
+    cli = _repo_cli_bin()
+    if cli:
+        preferred.append(cli)
+    for folder in preferred:
         norm = os.path.normcase(os.path.abspath(folder))
         if norm in seen:
             continue
         seen.add(norm)
         for name in _exe_names(stem):
             cand = os.path.join(folder, name)
+            if os.path.isfile(cand):
+                return cand
+    which = shutil.which(stem)
+    if which:
+        return which
+    shared = _repo_shared_bin()
+    if shared:
+        for name in _exe_names(stem):
+            cand = os.path.join(shared, name)
             if os.path.isfile(cand):
                 return cand
     return _exe_names(stem)[0]
@@ -122,25 +130,14 @@ def ffmpeg_exists() -> bool:
 
 
 def ffmpeg_subprocess_env() -> dict[str, str]:
-    """PATH prefix so a spawned ffmpeg.exe finds the matching shared DLLs."""
+    """PATH prefix: the directory of the resolved ffmpeg.exe only.
+
+    The static n8.1 CLI must not inherit ``_internal`` (master avcodec DLLs).
+    A shared ffmpeg.exe already sits next to its own DLLs.
+    """
     env = os.environ.copy()
-    extra: list[str] = []
     exe = ffmpeg_bin()
     folder = os.path.dirname(os.path.abspath(exe))
     if folder:
-        extra.append(folder)
-    for folder in _frozen_dirs():
-        extra.append(folder)
-    seen: set[str] = set()
-    prefix: list[str] = []
-    for folder in extra:
-        if not folder:
-            continue
-        norm = os.path.normcase(os.path.abspath(folder))
-        if norm in seen:
-            continue
-        seen.add(norm)
-        prefix.append(folder)
-    if prefix:
-        env["PATH"] = os.pathsep.join(prefix) + os.pathsep + env.get("PATH", "")
+        env["PATH"] = folder + os.pathsep + env.get("PATH", "")
     return env

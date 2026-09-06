@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0
 #
 # Fetch CI/native build inputs that are gitignored:
-#   - BtbN FFmpeg win64-gpl-shared -> spikes/spike0_d3d11_present/third_party/ffmpeg
-#   - lada HuggingFace weights     -> model_weights/
+#   - BtbN FFmpeg win64-gpl-shared (master) -> spikes/.../ffmpeg  (native decode)
+#   - BtbN FFmpeg n8.1 win64-gpl static     -> spikes/.../ffmpeg-cli (NVENC export, SDK 13.0)
+#   - lada HuggingFace weights              -> model_weights/
 # Used by .github/workflows/release.yml; also runnable locally.
 param(
     [switch]$SkipFfmpeg,
@@ -57,6 +58,11 @@ if (-not $SkipFfmpeg) {
         Move-Item -Path $inner.FullName -Destination $ffmpegRoot
         Write-Host "FFmpeg staged at $ffmpegRoot"
     }
+}
+
+# Static n8.1 CLI for NVENC export (SDK 13.0). Separate from the shared master tree.
+if (-not $SkipFfmpeg) {
+    & (Join-Path $PSScriptRoot "stage_encoder_ffmpeg.ps1")
 }
 
 if (-not $SkipWeights) {

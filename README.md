@@ -101,7 +101,7 @@ Sumu 换了个顺序想这件事：
 - **语言**：**C++（VS2022 BuildTools）+ pybind11**，原生内核暴露给 Python 编排。
 - **解码**：基线走 **D3D11 硬解**（FFmpeg-d3d11va）→ NV12 纹理 → shader → present，基线不碰 CUDA；AI 路径 NVDEC → torch，靠 **D3D11↔CUDA 零拷贝互操作**接起来。
 - **音频**：WASAPI，以 QPC 主时钟为准的**纯附加从属时钟**，不扰动 present 节奏。
-- **转码 / 流媒体**：无窗口 headless D3D11 硬解 → AI 去码 → **NVENC**（HLS / MP4）。带 NVENC 的 `ffmpeg.exe`：冻结包已放进 `_internal/`；开发机走 PATH 或 spike0 FFmpeg 树（`ffprobe.exe` 同路径）。
+- **转码 / 流媒体**：无窗口 headless D3D11 硬解 → AI 去码 → **NVENC**（HLS / MP4）。带 NVENC 的 `ffmpeg.exe`：冻结包放在 `_internal/ffmpeg-cli/`（BtbN n8.1 静态，NVENC SDK 13.0）；开发机走同一解析器。
 - **分工**：原生内核（decode + present + interop + ready-map + 音频）＋ Python 编排 AI（检测 / 修复 / 调度）与转码（`python/sumu/webstream`：headless 解码 + DecensorProcessor + 编码器 + 服务器）。
 
 
@@ -118,7 +118,7 @@ Sumu 换了个顺序想这件事：
 5. **运行**：VSCode task `sumu: run (dev)`，或 `.venv\Scripts\python.exe scripts/play.py`。首次运行无 TRT 引擎时走 eager 回退，GUI 启动后自动离线编译加速引擎。
 6. **打包分发**：`powershell -ExecutionPolicy Bypass -File scripts/build_dist.ps1`，产物 `dist/sumu/`（≈6.9GB，不含 TRT 引擎，含离线编译所需的 TensorRT builder / NVRTC）。分卷上传：`scripts/package_release.ps1`（`.7z.001` = part1，`.7z.002` = part2）。推 `v*` tag 或手动跑 GitHub Action `release` 会构建并上传 Release。细节见 [docs/packaging.md](docs/packaging.md)。
 
-> 纯本地实时播放只需上面 1–5；**Web 串流 / 离线导出**在冻结包里已带 `ffmpeg.exe`。开发机若没用打包产物，把带 NVENC 的 `ffmpeg.exe` 放进 PATH 即可（或使用 native 构建已拉取的 spike0 FFmpeg 树）。
+> 纯本地实时播放只需上面 1–5；**Web 串流 / 离线导出**在冻结包里已带 `ffmpeg.exe`（n8.1 / NVENC 13.0，不要求驱动 610+）。
 
 > **TensorRT 引擎不进分发包，但编译期运行时进包**：引擎绑定 GPU 架构 + TRT 版本 + 精度 + OS，不能跨机分发。**GitHub CI 不编译引擎。** 每台机器 GUI 启动时自行**离线**编译（不访问网络）——编译前走 eager 回退（约 3× 慢），首屏显示进度，编完热切换并落盘缓存，非 Nvidia / 非 fp16 机器恒走 eager。失败时点重试，详情见 `sumu.log`。
 

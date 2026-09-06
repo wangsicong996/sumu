@@ -33,6 +33,7 @@ import time
 
 import sumu_core  # noqa: E402
 from sumu.pipeline import build_models, default_restoration_model_path  # noqa: E402
+from sumu.win_console import hide_console, show_console
 from sumu import settings as settings_mod  # noqa: E402 -- M-E: persisted volume/mute/recent/resume
 from sumu import i18n as i18n_mod  # noqa: E402
 
@@ -664,6 +665,7 @@ def main():
                     while True:
                         fwd = ipc_listener.incoming.get_nowait()
                         player.show_window()
+                        show_console()
                         parked = False
                         if fwd:
                             if export_mode:
@@ -890,6 +892,7 @@ def main():
                     opened = False
                     current_path = None
                 player.hide_window()
+                hide_console()
                 parked = True
                 park_deadline = time.monotonic() + _PARK_SECONDS
 
@@ -1201,6 +1204,7 @@ def main():
             # model unload (finally -> player.close() -> process exit returns the GPU memory).
             if parked and time.monotonic() >= park_deadline:
                 print("== park == no relaunch within the window; exiting", file=sys.stderr)
+                hide_console()
                 break
 
             # 50Hz main loop. NOT 0.008 (125Hz): measured regression (see run_player.py:236 /

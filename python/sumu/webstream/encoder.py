@@ -26,6 +26,43 @@ import numpy as np
 
 from sumu.ffmpeg_exe import ffmpeg_bin, ffmpeg_subprocess_env
 
+_nvenc_help: str | None = None
+
+
+def _nvenc_h264_help(exe: str) -> str:
+    global _nvenc_help
+    if _nvenc_help is not None:
+        return _nvenc_help
+    try:
+        p = subprocess.run(
+            [exe, "-hide_banner", "-h", "encoder=h264_nvenc"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            startupinfo=_startupinfo(), timeout=20, check=False,
+            env=ffmpeg_subprocess_env(),
+        )
+        _nvenc_help = (p.stdout or b"").decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 -- empty help falls back to hyphenated names
+        _nvenc_help = ""
+    return _nvenc_help
+
+
+def _nvenc_opt(help_text: str, hyphen: str, underscore: str) -> str:
+    """Pick the AVOption name this ffmpeg build actually lists."""
+    if f"-{underscore}" in help_text and f"-{hyphen}" not in help_text:
+        return f"-{underscore}"
+    return f"-{hyphen}"
+
+
+def _nvenc_quality_flags(exe: str) -> list[str]:
+    help_text = _nvenc_h264_help(exe)
+    return [
+        "-tune", "hq",
+        _nvenc_opt(help_text, "b-ref-mode", "b_ref_mode"), "middle",
+        _nvenc_opt(help_text, "spatial-aq", "spatial_aq"), "1",
+        _nvenc_opt(help_text, "temporal-aq", "temporal_aq"), "1",
+        _nvenc_opt(help_text, "rc-lookahead", "rc_lookahead"), "32",
+    ]
+
 
 def _bgr_to_yuv420(arr, bt709: bool = True, full_range: bool = False) -> np.ndarray:
     """Convert a full-range BGR (H,W,3) uint8 numpy frame to planar YUV420p (Y then U then V
@@ -259,11 +296,9 @@ class NvencEncoder:
             # max spatial/temporal AQ, B-frame references, full lookahead, and the hq tune. Even
             # at maximum these cost far less than the AI decensor pipeline, so there is no reason
             # to leave quality headroom on the table for a non-realtime export.
-            # Names match current FFmpeg NVENC AVOptions (BtbN master): spatial-aq /
-            # temporal-aq are hyphenated; the old spatial_aq form is rejected as a
-            # global option ("Unrecognized option 'spatial_aq'").
-            cmd += ["-tune", "hq", "-b_ref_mode", "middle",
-                    "-spatial-aq", "1", "-temporal-aq", "1", "-rc-lookahead", "32"]
+            # Option names differ across FFmpeg NVENC builds (spatial-aq vs spatial_aq);
+            # probe h264_nvenc help so n8.1 and older PATH ffmpeg both work.
+            cmd += _nvenc_quality_flags(exe)
         cmd += ["-g", str(gop)]
 
         if audio_source:

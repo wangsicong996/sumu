@@ -123,7 +123,7 @@ blocker 的对齐方式（与直出同思路，映射到转码进程上）：
 
 ## 运行时依赖
 
-- **`ffmpeg.exe` / `ffprobe.exe`**：冻结包由 `scripts/build_dist.ps1` 从 spike0 的 BtbN `win64-gpl-shared` 拷进 `_internal/`（与 native 解码 DLL 同目录，含 NVENC）。运行时经 `sumu.ffmpeg_exe` 解析，不依赖系统 PATH。开发机回退 PATH，再回退同一棵 FFmpeg 树。可用 `SUMU_FFMPEG` / `SUMU_FFPROBE` 覆盖。
+- **`ffmpeg.exe` / `ffprobe.exe`**：冻结包由 `scripts/stage_encoder_ffmpeg.ps1` 放入 `_internal/ffmpeg-cli/`，用 **BtbN n8.1 静态 gpl**（NVENC SDK **13.0**）。native 解码 DLL 仍是 spike0 的 master gpl-shared。master 的 `ffmpeg.exe` 按 SDK 13.1 编译，在只暴露 API 13.0 的驱动上会直接退出。运行时经 `sumu.ffmpeg_exe` 解析。可用 `SUMU_FFMPEG` / `SUMU_FFPROBE` 覆盖。
 - `sumu.webstream` 由 `packaging/sumu.spec` 的 `collect_submodules("sumu")` 一并收集，懒 import
   不影响冻结分析。
 

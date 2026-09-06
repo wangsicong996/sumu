@@ -76,7 +76,7 @@ These are non-negotiable for sumu (full design notes in [DESIGN.md](DESIGN.md)):
 - **Language**: **C++ (VS2022 BuildTools) + pybind11** — native core exposed to Python for orchestration.
 - **Decode**: baseline is **D3D11 hardware decode** (FFmpeg-d3d11va) → NV12 texture → shader → present, no CUDA on the baseline path; the AI path is NVDEC → torch, joined by **zero-copy D3D11↔CUDA interop**.
 - **Audio**: WASAPI, a **pure subordinate clock** driven by the QPC master — never disturbs present pacing.
-- **Transcode / streaming**: windowless headless D3D11 hardware decode → AI removal → **NVENC** (HLS / MP4). An NVENC-enabled `ffmpeg.exe` is staged into `_internal/` of the frozen bundle; for a dev checkout, PATH or the spike0 FFmpeg tree (`ffprobe.exe` uses the same resolver).
+- **Transcode / streaming**: windowless headless D3D11 hardware decode → AI removal → **NVENC** (HLS / MP4). An NVENC-enabled `ffmpeg.exe` is staged into `_internal/ffmpeg-cli/` of the frozen bundle (BtbN n8.1 static, NVENC SDK 13.0).
 - **Split of labor**: native core (decode + present + interop + ready-map + audio) + Python-side orchestration (detect / restore / schedule) and transcode (`python/sumu/webstream`: headless decode + DecensorProcessor + encoder + server).
 
 
@@ -94,7 +94,7 @@ These are non-negotiable for sumu (full design notes in [DESIGN.md](DESIGN.md)):
 5. **Run**: VSCode task `sumu: run (dev)`, or `.venv\Scripts\python.exe scripts/play.py`. On the first run without TRT engines, falls back to eager; GUI start auto-compiles engines offline.
 6. **Package for distribution**: `powershell -ExecutionPolicy Bypass -File scripts/build_dist.ps1`. Outputs `dist/sumu/` (≈6.9GB, no TRT *engines*, but with the TensorRT builder / NVRTC needed for offline compile). Split for GitHub: `scripts/package_release.ps1` (`.7z.001` = part1, `.7z.002` = part2). Pushing a `v*` tag or running the `release` GitHub Action builds and uploads a Release. See [docs/packaging.md](docs/packaging.md).
 
-> Plain local real-time playback only needs steps 1–5; **Web streaming / offline export** ship `ffmpeg.exe` inside the frozen bundle. On a dev checkout without the bundle, put an NVENC-enabled `ffmpeg.exe` on PATH (or use the spike0 FFmpeg tree pulled for the native build).
+> Plain local real-time playback only needs steps 1–5; **Web streaming / offline export** ship `ffmpeg.exe` inside the frozen bundle (n8.1 / NVENC 13.0, does not require driver 610+).
 
 > **TensorRT engines are not shipped, but the compile-time runtime is**: engines are bound to GPU architecture + TRT version + precision + OS and cannot be redistributed across machines. **GitHub CI does not compile engines.** Each machine compiles its own **offline** when the GUI starts (no network) — falls back to eager (~3× slower) until then, progress shows on the first screen, hot-swaps in on completion and is cached to disk. Non-NVIDIA / non-fp16 machines never trigger compilation and always stay on eager. Failures offer retry; details land in `sumu.log`.
 
