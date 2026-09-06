@@ -5,7 +5,11 @@
 # patch from the source is dropped — source/dev runs don't need it.
 from __future__ import annotations
 
+import io
 import logging
+import os
+import shutil
+import tempfile
 import time
 import warnings
 
@@ -49,6 +53,98 @@ def _mute_torch_tensorrt(*, swallow: bool = True) -> None:
     torch.ops.tensorrt.set_logging_level(int(trt.ILogger.Severity.ERROR))
     _torchtrt_muted = True
     _torchtrt_swallow = swallow
+
+
+def _is_ascii_path(path: str) -> bool:
+    try:
+        path.encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _ascii_writable_dir() -> str | None:
+    """A directory whose full path is ASCII and writable — safe for PyTorchFileWriter."""
+    drive = os.environ.get("SystemDrive", "C:")
+    local_app = os.environ.get("LOCALAPPDATA", "")
+    candidates = [
+        tempfile.gettempdir(),
+        os.path.join(local_app, "Temp") if local_app else "",
+        os.path.join(os.environ.get("ProgramData", os.path.join(drive, "ProgramData")),
+                     "sumu", "trt-scratch"),
+        os.path.join(drive, "Temp"),
+        os.path.join(drive, "Windows", "Temp"),
+    ]
+    for candidate in candidates:
+        if not candidate or not _is_ascii_path(candidate):
+            continue
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            probe = os.path.join(candidate, "sumu_trt_probe.tmp")
+            with open(probe, "wb") as f:
+                f.write(b"ok")
+            os.remove(probe)
+            return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _atomic_write_bytes(dest_path: str, data: bytes) -> None:
+    tmp_path = dest_path + ".tmp"
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(data)
+        os.replace(tmp_path, dest_path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _write_archive_to_path(writer, dest_path: str) -> None:
+    """Serialize via ``writer(buffer_or_ascii_path)`` then Python-write ``dest_path``.
+
+    ``torch.export.save`` / ``PyTorchFileWriter`` check the parent dir with
+    ``std::filesystem`` on a ``std::string``. On Windows that string is the ANSI
+    code page, so a Unicode install path (e.g. ``E:\\去马赛克\\...``) is reported
+    as "Parent directory does not exist" even after ``os.makedirs``. Load already
+    opens the file in Python (``open(..., "rb")`` → ``torch.export.load(f)``);
+    save must not hand the Unicode path to C++.
+    """
+    dest_path = os.path.abspath(dest_path)
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    first_err: BaseException | None = None
+    buf = io.BytesIO()
+    try:
+        writer(buf)
+        data = buf.getvalue()
+        if data:
+            _atomic_write_bytes(dest_path, data)
+            return
+        first_err = RuntimeError(f"TRT archive save produced 0 bytes ({dest_path})")
+    except Exception as e:  # noqa: BLE001 — fall back to an ASCII temp path
+        first_err = e
+    scratch = _ascii_writable_dir()
+    if scratch is None:
+        if first_err is not None:
+            raise first_err
+        raise RuntimeError(f"TRT engine save failed ({dest_path})")
+    tmp_dir = tempfile.mkdtemp(prefix="sumu-trt-", dir=scratch)
+    try:
+        tmp_file = os.path.join(tmp_dir, "engine.pt2")
+        writer(tmp_file)
+        if not os.path.isfile(tmp_file) or os.path.getsize(tmp_file) == 0:
+            if first_err is not None:
+                raise first_err
+            raise RuntimeError(f"TRT archive save produced no file ({dest_path})")
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        shutil.move(tmp_file, dest_path)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def get_workspace_size_bytes() -> int:
@@ -158,10 +254,13 @@ def compile_and_save_torchtrt_dynamo(
         prev_level = fake_reg_logger.level
         fake_reg_logger.setLevel(logging.ERROR)
         try:
-            if has_dynamic:
-                _save_with_dynamic_shapes(trt_gm, output_path, inputs, device, dtype)
-            else:
-                torch_tensorrt.save(trt_gm, output_path, inputs=inputs)
+            def _save(target) -> None:
+                if has_dynamic:
+                    _save_with_dynamic_shapes(trt_gm, target, inputs, device, dtype)
+                else:
+                    torch_tensorrt.save(trt_gm, target, inputs=inputs)
+
+            _write_archive_to_path(_save, output_path)
         finally:
             fake_reg_logger.setLevel(prev_level)
     t_saved = time.perf_counter()
