@@ -259,8 +259,11 @@ class NvencEncoder:
             # max spatial/temporal AQ, B-frame references, full lookahead, and the hq tune. Even
             # at maximum these cost far less than the AI decensor pipeline, so there is no reason
             # to leave quality headroom on the table for a non-realtime export.
+            # Names match current FFmpeg NVENC AVOptions (BtbN master): spatial-aq /
+            # temporal-aq are hyphenated; the old spatial_aq form is rejected as a
+            # global option ("Unrecognized option 'spatial_aq'").
             cmd += ["-tune", "hq", "-b_ref_mode", "middle",
-                    "-spatial_aq", "1", "-temporal_aq", "1", "-rc-lookahead", "32"]
+                    "-spatial-aq", "1", "-temporal-aq", "1", "-rc-lookahead", "32"]
         cmd += ["-g", str(gop)]
 
         if audio_source:
