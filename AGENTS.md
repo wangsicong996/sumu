@@ -20,7 +20,7 @@ sumu（澄む）是一个**时钟驱动、全程 GPU** 的实时去马赛克预�
 - **语言**：**C++（VS2022 BuildTools）+ pybind11**，原生内核编译为模块 `sumu_core`（类 `Player`）暴露给 Python。
 - **解码**：基线走 **D3D11 硬解**（FFmpeg d3d11va）→ NV12 纹理 → shader → present，**基线不碰 CUDA**；AI 路径 NVDEC → torch，靠 **D3D11↔CUDA 零拷贝互操作**接起来。
 - **音频**：WASAPI，以 QPC 主时钟为准的**纯附加从属时钟**，不扰动 present 节奏。
-- **转码 / 流媒体**：无窗口 headless D3D11 硬解 → AI 去码 → **NVENC**（HLS / MP4），实现 Web 局域网串流与离线导出。带 NVENC 的 `ffmpeg.exe` 是这部分 + 缩略图的软依赖（`ffprobe.exe` 已是既有软依赖，用于读取视频元数据）。
+- **转码 / 流媒体**：无窗口 headless D3D11 硬解 → AI 去码 → **NVENC**（HLS / MP4），实现 Web 局域网串流与离线导出。带 NVENC 的 `ffmpeg.exe` 由冻结包放进 `_internal/`（与 native 同一套 BtbN gpl-shared）；dev 走 PATH 或 spike0 FFmpeg 树（`ffprobe.exe` 同路径解析）。
 - **分工**：原生内核（decode + present + interop + ready-map + 音频 + UI 渲染）＋ Python 编排 AI（检测 / 修复 / 调度）与转码（`python/sumu/webstream`）。
 
 **目标机器（所有实测的唯一基准）**：RTX 4080 · 16GB · Win11 · 4K@150Hz · 驱动 610.47 · Python 3.13 · torch 2.8.0+cu128（运行期 CUDA 12.8）· MSVC = VS2022 BuildTools · CUDA Toolkit **v13.3**（仅构建期取 `cuda.h` / `cuda.lib` 驱动 API，无 nvcc）。
@@ -80,7 +80,7 @@ test_video*.mp4          本地测试素材 1080p30 / 4K60 HEVC / 2.1GB 长片�
 
 > **沙箱受阻不重试**：在受限沙箱里 `build.bat` 可能因 WMI 进程枚举被拒（`Get-CimInstance 拒绝访问`，杀不掉驻留 python → 锁住 `sumu_core.*.pyd`）或 ninja 子进程/管道被拦而卡死。一旦出现访问拒绝 / `[sandbox: ...]` / ninja 长时间 0 CPU 且 `sumu_core.*.pyd` 未刷新，**不要换命令重试、不要手拼 ninja/cmake**——`job_kill` 清理残留进程后如实报告，交由用户在本机跑 `cmd /c "native\build.bat"` 验证编译。
 
-> TRT 引擎不随包分发（绑定 GPU 架构+TRT 版本+精度+OS；**GitHub 不编译**，用户机 GUI 启动时离线自编译；分发包含 builder-resource / NVRTC）。Web 串流 / 离线导出还需带 NVENC 的 `ffmpeg.exe` 在 PATH 上。
+> TRT 引擎不随包分发（绑定 GPU 架构+TRT 版本+精度+OS；**GitHub 不编译**，用户机 GUI 启动时离线自编译；分发包含 builder-resource / NVRTC）。Web 串流 / 离线导出随包带 `_internal/ffmpeg.exe`（BtbN gpl-shared，含 NVENC）；dev 仍可用 PATH 或 spike0 FFmpeg 树。
 
 ### 验证与压测
 

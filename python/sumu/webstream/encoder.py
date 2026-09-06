@@ -24,10 +24,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-# ffmpeg binary name. Production relies on ffmpeg.exe being on PATH (already a soft dependency:
-# python/sumu/ai/utils/video_utils.py shells out to ffprobe); the frozen bundle stages a full
-# ffmpeg.exe next to the executable (see docs/packaging.md).
-FFMPEG = "ffmpeg"
+from sumu.ffmpeg_exe import ffmpeg_bin, ffmpeg_subprocess_env
 
 
 def _bgr_to_yuv420(arr, bt709: bool = True, full_range: bool = False) -> np.ndarray:
@@ -206,7 +203,8 @@ class NvencEncoder:
         if mode == "hls":
             os.makedirs(out, exist_ok=True)
 
-        cmd = [FFMPEG, "-hide_banner", "-y", "-loglevel", "warning"]
+        exe = ffmpeg_bin()
+        cmd = [exe, "-hide_banner", "-y", "-loglevel", "warning"]
         if audio_source:
             # Audio is a separate input whose PTS must align with the (0-based) rawvideo pipe's
             # PTS. -ss BEFORE -i seeks the audio input AND rebases its output timestamps to 0
@@ -293,10 +291,16 @@ class NvencEncoder:
         self._bt709 = bt709
         self._full_range = full_range
         try:
-            self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.PIPE, startupinfo=_startupinfo())
+            self._proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE, startupinfo=_startupinfo(),
+                env=ffmpeg_subprocess_env())
         except OSError as e:
-            raise EncoderError(f"failed to launch {FFMPEG}: {e!r}") from e
+            raise EncoderError(
+                f"failed to launch ffmpeg ({exe}): {e!r}. "
+                "Frozen builds ship ffmpeg.exe in _internal; dev needs ffmpeg on PATH "
+                "or the spike0 FFmpeg tree."
+            ) from e
 
     @property
     def cmd(self) -> list[str]:

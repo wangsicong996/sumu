@@ -179,6 +179,7 @@ hiddenimports += [
     "sumu.settings",
     "sumu.i18n",
     "sumu.offline_env",
+    "sumu.ffmpeg_exe",
 ] + collect_submodules("sumu")
 
 # UI message catalogs (JSON). Embedded fallbacks in i18n.py cover a missing tree, but
@@ -204,6 +205,20 @@ if os.path.isdir(_native_sumu):
         lower = name.lower()
         if lower.endswith(".dll") and (lower.startswith("av") or lower.startswith("sw")):
             binaries += [(os.path.join(_native_sumu, name), ".")]
+
+# CLI ffmpeg/ffprobe for export + webstream (NVENC in the BtbN gpl-shared build).
+# FastFreeze skips COLLECT, so scripts/build_dist.ps1 also copies these into _internal.
+_ffmpeg_bin = os.path.join(ROOT, "spikes", "spike0_d3d11_present", "third_party", "ffmpeg", "bin")
+if os.path.isdir(_ffmpeg_bin):
+    for name in ("ffmpeg.exe", "ffprobe.exe"):
+        path = os.path.join(_ffmpeg_bin, name)
+        if os.path.isfile(path):
+            binaries += [(path, ".")]
+    for name in sorted(os.listdir(_ffmpeg_bin)):
+        if name.lower().endswith(".dll"):
+            binaries += [(os.path.join(_ffmpeg_bin, name), ".")]
+else:
+    print(f"[sumu.spec] WARN missing FFmpeg bin dir {_ffmpeg_bin}")
 
 a = Analysis(
     [os.path.join(ROOT, "scripts", "sumu_main.py")],

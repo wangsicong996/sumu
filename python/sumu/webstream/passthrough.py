@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 
-FFMPEG = "ffmpeg"
+from sumu.ffmpeg_exe import ffmpeg_bin, ffprobe_bin, ffmpeg_subprocess_env
 
 # GOP in seconds (segment / seek granularity). Matches the encoder.py default.
 GOP_SECONDS = 2.0
@@ -57,12 +57,13 @@ def _probe(path: str) -> tuple[float, float]:
     and the transcoder just omits the -g hint (ffmpeg then forces keyframes per HLS segment)."""
     try:
         p = subprocess.run(
-            ["ffprobe", "-v", "error",
+            [ffprobe_bin(), "-v", "error",
              "-show_entries", "format=duration",
              "-show_entries", "stream=codec_type,width,height,avg_frame_rate,disposition",
              "-of", "json", path],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             startupinfo=_startupinfo(), timeout=30, check=False,
+            env=ffmpeg_subprocess_env(),
         )
         if p.returncode != 0:
             return 0.0, 0.0
@@ -199,8 +200,10 @@ class PassthroughSession:
             self.error = None
             try:
                 with open(log_path, "wb") as errf:
-                    self._proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=errf,
-                                                  cwd=out_dir, startupinfo=_startupinfo())
+                    self._proc = subprocess.Popen(
+                        cmd, stdout=subprocess.DEVNULL, stderr=errf,
+                        cwd=out_dir, startupinfo=_startupinfo(),
+                        env=ffmpeg_subprocess_env())
             except Exception as e:  # noqa: BLE001 -- a failed (re)start must not crash the request
                 self._proc = None
                 self.error = f"failed to start ffmpeg: {e!r}"
@@ -310,7 +313,7 @@ class PassthroughSession:
         self._proc = None
 
     def _build_cmd(self, start_seconds: float, nonce: int, gop: int | None) -> list[str]:
-        cmd = [FFMPEG, "-hide_banner", "-y", "-loglevel", "warning"]
+        cmd = [ffmpeg_bin(), "-hide_banner", "-y", "-loglevel", "warning"]
         if self.hwaccel:
             cmd += ["-hwaccel", self.hwaccel]
         if start_seconds > 0.0:

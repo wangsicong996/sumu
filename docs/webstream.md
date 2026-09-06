@@ -123,8 +123,7 @@ blocker 的对齐方式（与直出同思路，映射到转码进程上）：
 
 ## 运行时依赖
 
-- **`ffmpeg.exe` 必须在 PATH 上**（编码/封装）。这是新增软依赖；`ffprobe.exe` 早已是既有软依赖
-  （`get_video_meta_data`）。冻结分发时随包放一个带 `nvenc` 的 `ffmpeg.exe`（如 Gyan full build）。
+- **`ffmpeg.exe` / `ffprobe.exe`**：冻结包由 `scripts/build_dist.ps1` 从 spike0 的 BtbN `win64-gpl-shared` 拷进 `_internal/`（与 native 解码 DLL 同目录，含 NVENC）。运行时经 `sumu.ffmpeg_exe` 解析，不依赖系统 PATH。开发机回退 PATH，再回退同一棵 FFmpeg 树。可用 `SUMU_FFMPEG` / `SUMU_FFPROBE` 覆盖。
 - `sumu.webstream` 由 `packaging/sumu.spec` 的 `collect_submodules("sumu")` 一并收集，懒 import
   不影响冻结分析。
 

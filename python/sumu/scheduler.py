@@ -473,9 +473,62 @@ class Scheduler:
             for clip in clips:
                 self._restore_and_push(clip)
 
+    def _cache_pinned(self) -> set[int]:
+        """Frame numbers restore/blend still needs. Must not be evicted from frame_cache.
+
+        Open scenes can start near the playhead; by the time clip_length is reached (or a
+        previous clip's restore blocked the producer), those frames may already be behind
+        ``current_frame()``. Dropping them made ``_restore_and_push`` miss → mosaic stays.
+        """
+        pinned: set[int] = set(self.pending_regions.keys())
+        for scene in self.scenes:
+            start, end = scene.frame_start, scene.frame_end
+            if start is None or end is None:
+                continue
+            pinned.update(range(int(start), int(end) + 1))
+        return pinned
+
+    def _cache_put(self, n: int, frame: torch.Tensor) -> None:
+        self.frame_cache[n] = frame
+        pinned = self._cache_pinned()
+        pinned.add(n)
+        head = 0
+        try:
+            head = int(self.player.current_frame())
+        except Exception:  # noqa: BLE001
+            pass
+        # Drop frames present already passed, unless a scene / pending blend still needs them.
+        stale = [k for k in self.frame_cache if k < head and k not in pinned]
+        for k in stale:
+            self.frame_cache.pop(k, None)
+        while self.pending_regions:
+            oldest = next(iter(self.pending_regions))
+            if oldest >= head:
+                break
+            self.pending_regions.popitem(last=False)
+        cap = self._frame_cache_cap()
+        if len(self.frame_cache) > cap:
+            for k in list(self.frame_cache.keys()):
+                if len(self.frame_cache) <= cap:
+                    break
+                if k in pinned:
+                    continue
+                self.frame_cache.pop(k, None)
+                self.pending_regions.pop(k, None)
+
     def _restore_and_push(self, clip: Clip) -> None:
         frame_start, frame_end = clip.frame_start, clip.frame_end  # Clip.pop() mutates these
         n_frames = frame_end - frame_start + 1
+        try:
+            head = int(self.player.current_frame())
+        except Exception:  # noqa: BLE001
+            head = 0
+        # Clip fully behind the playhead: restoring it cannot reach present (I9). Drain
+        # without BasicVSR so a slow GPU can catch up instead of digging a deeper hole.
+        if frame_end < head:
+            for _ in range(n_frames):
+                clip.pop()
+            return
         # Net BasicVSR wall time only (no gate wait). Synchronize so async GPU work is fully
         # charged to this clip rather than leaking into the subsequent blend/push path.
         if torch.cuda.is_available():
@@ -493,12 +546,10 @@ class Scheduler:
         # Drain clip into sparse pending (not full-frame RGBA in the native AI ring yet).
         # Multi-region: multiple clips may contribute regions to the same fnum; JIT flush
         # blends them all onto the cached original before push_ai_frame.
+        missed = 0
         for fnum in range(frame_start, frame_end + 1):
             if fnum not in self.frame_cache:
-                logger.warning(
-                    "scheduler: frame_cache miss for fnum=%d before sparse store - dropping region",
-                    fnum,
-                )
+                missed += 1
                 clip.pop()
                 self.stats.frame_cache_misses += 1
                 continue
@@ -516,6 +567,11 @@ class Scheduler:
                 self.pending_regions[fnum] = [region]
             else:
                 bucket.append(region)
+        if missed:
+            logger.warning(
+                "scheduler: dropped %d/%d regions (frame_cache miss) clip [%d,%d] head=%d",
+                missed, n_frames, frame_start, frame_end, head,
+            )
 
         try:
             head = int(self.player.current_frame())
@@ -550,7 +606,7 @@ class Scheduler:
                 continue
             orig = self.frame_cache.get(fnum)
             if orig is None:
-                logger.warning(
+                logger.debug(
                     "scheduler: frame_cache miss for fnum=%d at JIT push - skip", fnum,
                 )
                 self.stats.frame_cache_misses += 1
@@ -576,31 +632,6 @@ class Scheduler:
             self.stats.frames_pushed += 1
             if self.stats.first_push_at is None:
                 self.stats.first_push_at = time.monotonic()
-
-    def _cache_put(self, n: int, frame: torch.Tensor) -> None:
-        self.frame_cache[n] = frame
-        # Drop frames already behind the present head (no clip can still need them for blend).
-        head = 0
-        try:
-            head = int(self.player.current_frame())
-        except Exception:  # noqa: BLE001
-            pass
-        while self.frame_cache:
-            oldest = next(iter(self.frame_cache))
-            if oldest >= head:
-                break
-            self.frame_cache.popitem(last=False)
-        # Bound pending + cache to lead span (sparse crops are cheap; full BGR is not).
-        while self.pending_regions:
-            oldest = next(iter(self.pending_regions))
-            if oldest >= head:
-                break
-            self.pending_regions.popitem(last=False)
-        cap = self._frame_cache_cap()
-        while len(self.frame_cache) > cap:
-            evicted_n, _ = self.frame_cache.popitem(last=False)
-            self.pending_regions.pop(evicted_n, None)
-            logger.debug("scheduler: frame_cache evicted frame %d before it was blended", evicted_n)
 
     @staticmethod
     def _to_rgba(bgr: torch.Tensor) -> torch.Tensor:

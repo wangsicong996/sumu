@@ -5,8 +5,8 @@
 # of the duration) with ffmpeg and caches it as a small JPEG under %TEMP%/sumu-thumbs. Ported
 # from D:\Git\simple-http-video-server (the reference front-end, kept visually in sync); a
 # missing ffmpeg/ffprobe simply yields None so the front-end falls back to its inline SVG
-# placeholder. Stdlib-only + ffmpeg/ffprobe on PATH (ffprobe is already a soft dependency of
-# sumu.ai.utils.video_utils; ffmpeg of sumu.webstream.encoder).
+# placeholder. Stdlib-only; binaries resolve via sumu.ffmpeg_exe (frozen _internal, PATH, or
+# the spike0 FFmpeg tree).
 from __future__ import annotations
 
 import hashlib
@@ -16,6 +16,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+
+from sumu.ffmpeg_exe import ffmpeg_bin, ffprobe_bin, ffmpeg_exists, ffmpeg_subprocess_env
 
 THUMB_WIDTH = 480
 
@@ -49,10 +51,14 @@ def ffmpeg_available() -> bool:
     with _ffmpeg_lock:
         if _ffmpeg_ok is None:
             try:
-                p = subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, startupinfo=_startupinfo(),
-                                   timeout=30, check=False)
-                _ffmpeg_ok = p.returncode == 0
+                if not ffmpeg_exists():
+                    _ffmpeg_ok = False
+                else:
+                    p = subprocess.run(
+                        [ffmpeg_bin(), "-version"], stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, startupinfo=_startupinfo(),
+                        timeout=30, check=False, env=ffmpeg_subprocess_env())
+                    _ffmpeg_ok = p.returncode == 0
             except Exception:  # noqa: BLE001 -- probe failure == unavailable
                 _ffmpeg_ok = False
         return _ffmpeg_ok
@@ -63,12 +69,13 @@ def _probe(path: str) -> tuple[float | None, int | None]:
     and prefers the largest non-cover video stream, matching the reference server's probe."""
     try:
         p = subprocess.run(
-            ["ffprobe", "-v", "error",
+            [ffprobe_bin(), "-v", "error",
              "-show_entries", "format=duration",
              "-show_entries", "stream=index,codec_type,width,height,disposition",
              "-of", "json", path],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             startupinfo=_startupinfo(), timeout=30, check=False,
+            env=ffmpeg_subprocess_env(),
         )
         if p.returncode != 0:
             return None, None
@@ -103,13 +110,14 @@ def _cache_path(path: str, st) -> str:
 def _extract_frame(path: str, seek: float, stream_idx: int | None, tmp: str) -> None:
     map_args = ["-map", f"0:{stream_idx}"] if stream_idx is not None else ["-map", "0:v:0"]
     p = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error",
+        [ffmpeg_bin(), "-hide_banner", "-loglevel", "error",
          "-ss", f"{seek:.3f}", "-i", path, *map_args,
          "-frames:v", "1", "-an", "-sn",
          "-vf", f"scale={THUMB_WIDTH}:-2:flags=fast_bilinear",
          "-q:v", "4", "-y", tmp],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         startupinfo=_startupinfo(), timeout=60, check=False,
+        env=ffmpeg_subprocess_env(),
     )
     if p.returncode != 0:
         raise RuntimeError(f"ffmpeg exited {p.returncode}")

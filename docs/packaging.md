@@ -28,7 +28,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package_release.ps1
 
 `packaging/sumu.spec` 里的 `COLLECT` 阶段**每次都无条件清空重建整个 `dist\sumu`**（PyInstaller `COLLECT._check_guts` 恒返回 True，"in order to clean the output directory"——见 spec 文件里的注释），也就是把 `_internal/`（torch/cv2/tensorrt 等 DLL，≈7GB）不管改没改都整份重拷一遍；这是第 3 步"极长"的根因，跟 sumu 自己代码改动大小无关。而 `EXE(exclude_binaries=True)` 本身只把 sumu 自己的 Python 源码/字节码链接成一个 47MB 的瘦 exe 写到 `build\sumu\sumu.exe`，不碰 `dist/`,这一步很快。
 
-`-FastFreeze` 让 `sumu.spec` 靠 `SUMU_FAST_FREEZE` 环境变量跳过 `COLLECT(...)` 调用，只产出新的 `build\sumu\sumu.exe`，再由 `build_dist.ps1` 手动把这个 exe + native 的 pyd/7 个 ffmpeg DLL（这些落在 `dist\sumu\_internal\` 下）直接覆盖拷进已有的 `dist\sumu`，完全不碰 `_internal` 里其余的数 GB 内容。
+`-FastFreeze` 让 `sumu.spec` 靠 `SUMU_FAST_FREEZE` 环境变量跳过 `COLLECT(...)` 调用，只产出新的 `build\sumu\sumu.exe`，再由 `build_dist.ps1` 手动把这个 exe + native 的 pyd/ffmpeg DLL + **`ffmpeg.exe`/`ffprobe.exe`**（这些落在 `dist\sumu\_internal\` 下）直接覆盖拷进已有的 `dist\sumu`，完全不碰 `_internal` 里其余的数 GB 内容。
 
 **边界（重要）**：
 - 要求先跑过一次不带 `-FastFreeze` 的完整构建（`dist\sumu\_internal` 必须已存在，否则报错拒绝跑）。
@@ -75,7 +75,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package_release.ps1
 - 额外 `collect_dynamic_libs('torch')`（Windows 下 CUDA DLL 在 `torch/lib` 内）。ctypes 查找 `nvrtc64_120_0.dll`（CUDA 12.0 名字），torch cu128 实际带的是 `nvrtc64_128_0.dll` —— spec 与 `scripts/stage_trt_compile_runtime.py` 会做 120 别名。
 - `collect_submodules`：`torch.export` / `torch._export` / `torch.fx`（`torch_tensorrt.compile(ir="dynamo")` 走 export，不走 inductor）。
 - mmengine：`collect_submodules` + `collect_data_files`；`copy_metadata`(torch,torchvision,numpy,ultralytics,mmengine)。
-- **native ext + 7 个 ffmpeg DLL 作为 `binaries` 落到 bundle 根 `.`**（pyd 靠同目录加载 ffmpeg，见 `docs/native_core.md`）。
+- **native ext + ffmpeg 共享 DLL 作为 `binaries` 落到 bundle 根 `.`**（pyd 靠同目录加载 ffmpeg DLL，见 `docs/native_core.md`）。另打入 **`ffmpeg.exe` / `ffprobe.exe`**（BtbN gpl-shared，含 NVENC）供导出与 Web 串流；`build_dist.ps1` 在 FastFreeze 路径也会再拷一次，因为 FastFreeze 跳过 COLLECT。
 - **`excludes=['av', 'polars', 'scipy', 'matplotlib', 'mpl_toolkits']`** —— daily 入口不用 PyAV；后三者是 ultralytics/mmengine 的可选依赖，推理路径不 import。
 - **layer-1 TOC 过滤**（`Analysis` 之后，见 spec 里 `_is_layer1_bloat`）：`collect_all` 会无视 `excludes=` 把 binary/data 硬塞进 TOC，所以再剥掉
   - `torch/lib/*.lib`、`torch/include/**`、`torch/testing/**`、`torch/share/**`（~2.7GB，链接/头文件/测试）

@@ -19,6 +19,8 @@ from fractions import Fraction
 import cv2
 
 from sumu.ai.utils import VideoMetadata
+from sumu.ffmpeg_exe import ffmpeg_subprocess_env
+from sumu.ffmpeg_exe import ffprobe_bin as _ffprobe_bin
 
 # NOTE: `torch` is intentionally not imported at module top-level, matching the convention
 # established in sumu/ai/utils/__init__.py -- `_nv12_to_bgr_hwc_gpu` imports it lazily inside
@@ -52,29 +54,6 @@ def video_metadata_from_session(
         time_base=Fraction(1, tb_den),
         start_pts=0,
     )
-
-
-def _ffprobe_bin() -> str:
-    """Resolve ffprobe for scripts / webstream. Frozen playback does not use this."""
-    import os
-    import shutil
-
-    found = shutil.which("ffprobe")
-    if found:
-        return found
-    names = ("ffprobe.exe", "ffprobe")
-    candidates = []
-    if getattr(sys, "frozen", False):
-        candidates.append(os.path.dirname(sys.executable))
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg:
-        candidates.append(os.path.dirname(ffmpeg))
-    for folder in candidates:
-        for name in names:
-            cand = os.path.join(folder, name)
-            if os.path.isfile(cand):
-                return cand
-    return "ffprobe"
 
 
 def _nv12_to_bgr_hwc_gpu(nv12, h: int, w: int, bt709: bool, full_range: bool):
@@ -166,7 +145,11 @@ def get_video_meta_data(path: str) -> VideoMetadata:
     `sumu.ai.utils` (already ported there, same fields as lada's dataclass)."""
     cmd = [_ffprobe_bin(), '-v', 'quiet', '-print_format', 'json', '-select_streams', 'v', '-show_streams', '-show_format', path]
     try:
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=_get_subprocess_startup_info())
+        p = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            startupinfo=_get_subprocess_startup_info(),
+            env=ffmpeg_subprocess_env(),
+        )
     except FileNotFoundError as e:
         raise FileNotFoundError(
             f"ffprobe not found (needed for scripts/webstream path probes; daily player uses native meta): {e}"
