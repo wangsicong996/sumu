@@ -305,6 +305,7 @@ def main():
     opened = False
     current_path = None
     video_meta = None
+    meta_failed_for = None  # path whose native meta probe failed; skip retry spam
     # Committed config values as plain ints (defaults from settings.json / Settings defaults).
     # A real SchedulerConfig is only built at scheduler-build time, once warmup has handed the
     # class over -- so nothing here forces the torch import onto startup.
@@ -562,7 +563,7 @@ def main():
 
     def _finish_open_success(path, is_reopen):
         """Shared post-open bookkeeping after player.open/reopen succeeded (main thread)."""
-        nonlocal opened, current_path, open_error_text, open_error_until, video_meta
+        nonlocal opened, current_path, open_error_text, open_error_until, video_meta, meta_failed_for
         apply_target_fps_for_open()
         print(f"== player.{'reopen' if is_reopen else 'open'} == "
               f"fps={player.fps():.4f} frames={player.frame_count()} "
@@ -576,6 +577,7 @@ def main():
         open_error_until = 0.0
         # Force scheduler rebuild against the new file (reopen already stopped it).
         video_meta = None
+        meta_failed_for = None
         settings.push_recent(current_path)
         player.play()  # open_session() starts paused at frame 0; auto-play from the start.
         try:
@@ -1142,57 +1144,27 @@ def main():
             # after do_open()/do_reopen()) since warmup can finish on its own schedule, well
             # after either of those. Skip while an async open is in flight (session half-built).
             if (opened and warm_ready and scheduler is None and warm_error is None
-                    and open_state is None):
+                    and open_state is None and current_path != meta_failed_for):
                 det_model, res_model, pad_mode = warm_models
-                # Lazy, off the startup path: compute video_meta now (get_video_meta_data came from
-                # the warmup worker) and build the config from the committed int knobs.
-                # Network sources: skip ffprobe/cv2 second open -- native already probed fps/dims/
-                # frame_count; a second remote probe races the player and hurts weak links.
+                # Native already probed fps/dims/frame_count on open. Do NOT shell out to
+                # ffprobe: frozen installs often have no ffprobe on PATH (WinError 2), which
+                # used to skip the Scheduler every tick — playback without mosaic removal.
                 try:
-                    if player.is_network():
-                        from fractions import Fraction
-                        from sumu.ai.utils import VideoMetadata
-                        sess_fps = float(player.fps())
-                        w, h = player.dims()
-                        fc = int(player.frame_count())
-                        fps_exact = Fraction(sess_fps).limit_denominator(1001)
-                        dur = (fc / sess_fps) if sess_fps > 0 and fc > 0 else 0.0
-                        video_meta = VideoMetadata(
-                            video_file=current_path,
-                            video_height=int(h),
-                            video_width=int(w),
-                            video_fps=sess_fps,
-                            average_fps=sess_fps,
-                            video_fps_exact=fps_exact,
-                            codec_name="unknown",
-                            frames_count=fc,
-                            duration=float(dur),
-                            time_base=Fraction(1, max(1, int(round(sess_fps * 1001))))
-                            if sess_fps > 0 else Fraction(1, 30),
-                            start_pts=0,
-                        )
-                        print(f"== video_meta (native, network) == {w}x{h} fps={sess_fps:.4f} "
-                              f"frames={fc}", file=sys.stderr)
-                    else:
-                        video_meta = warm_meta_fn(current_path)
+                    from sumu.ai.utils.video_utils import video_metadata_from_session
+                    w, h = player.dims()
+                    video_meta = video_metadata_from_session(
+                        current_path, width=int(w), height=int(h),
+                        fps=float(player.fps()), frame_count=int(player.frame_count()),
+                    )
+                    print(f"== video_meta (native) == {w}x{h} fps={float(player.fps()):.4f} "
+                          f"frames={int(player.frame_count())}"
+                          f"{' network' if player.is_network() else ''}",
+                          file=sys.stderr)
                 except Exception as e:  # noqa: BLE001 -- meta probe failure must not kill playback
-                    # File is already open and playing passthrough; just skip AI for this file.
                     print(f"== video_meta failed == {current_path!r}: {e}", file=sys.stderr)
                     video_meta = None
+                    meta_failed_for = current_path
                 if video_meta is not None:
-                    # Align AI meta with the retimed session (player.fps/frame_count after fps_div).
-                    # Network path already used session numbers; local still needs this remap.
-                    try:
-                        from fractions import Fraction
-                        sess_fps = float(player.fps())
-                        video_meta.video_fps = sess_fps
-                        video_meta.average_fps = sess_fps
-                        video_meta.video_fps_exact = Fraction(sess_fps).limit_denominator(1001)
-                        video_meta.frames_count = int(player.frame_count())
-                    except Exception:  # noqa: BLE001
-                        pass
-                    # Network: clamp AI lead to the shallow native decode-ahead (already enforced
-                    # inside Scheduler._effective_lead via decode_ahead_max, but keep config honest).
                     lead_for_cfg = cfg_lead
                     if player.is_network():
                         try:

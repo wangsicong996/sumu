@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import threading
-from fractions import Fraction
 
 import sumu_core
 
@@ -163,21 +162,15 @@ class TranscodeEngine:
 
     @staticmethod
     def _build_meta(source, dec):
-        """Build VideoMetadata from the open decoder for network sources (no second ffprobe open);
-        local files use ffprobe (matches the scheduler's get_video_meta_data path)."""
-        from sumu.ai.utils import VideoMetadata
-        from sumu.ai.utils.video_utils import get_video_meta_data
-        if dec.is_network():
-            w, h = dec.width(), dec.height()
-            fps = float(dec.fps())
-            fc = int(dec.frame_count()) if dec.frame_count() > 0 else 0
-            fps_exact = Fraction(fps).limit_denominator(1001)
-            dur = (fc / fps) if fps > 0 and fc > 0 else 0.0
-            return VideoMetadata(
-                video_file=source, video_height=h, video_width=w, video_fps=fps,
-                average_fps=fps, video_fps_exact=fps_exact, codec_name="unknown",
-                frames_count=fc, duration=float(dur),
-                time_base=Fraction(1, max(1, int(round(fps * 1001)))) if fps > 0 else Fraction(1, 30),
-                start_pts=0,
-            )
-        return get_video_meta_data(source)
+        """Build VideoMetadata from the already-open decoder (local and network).
+
+        Do not ffprobe a second time: frozen installs often have no ffprobe on PATH,
+        and native already has fps / dims / frame_count.
+        """
+        from sumu.ai.utils.video_utils import video_metadata_from_session
+        w, h = dec.width(), dec.height()
+        fps = float(dec.fps())
+        fc = int(dec.frame_count()) if dec.frame_count() > 0 else 0
+        return video_metadata_from_session(
+            source, width=w, height=h, fps=fps, frame_count=fc,
+        )

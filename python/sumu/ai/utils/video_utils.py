@@ -25,6 +25,58 @@ from sumu.ai.utils import VideoMetadata
 # the function body so merely importing this module does not force CUDA/cuDNN init.
 
 
+def video_metadata_from_session(
+    path: str, *, width: int, height: int, fps: float, frame_count: int,
+) -> VideoMetadata:
+    """Build ``VideoMetadata`` from an already-open native decoder (Player / HeadlessDecode).
+
+    Daily playback and transcode already probed fps / dims / frame_count on open. A second
+    ffprobe pass is unnecessary and fails on frozen installs that do not have ``ffprobe.exe``
+    on PATH (WinError 2), which used to skip the Scheduler entirely — video plays, mosaic stays.
+    """
+    fps = float(fps)
+    fc = int(frame_count)
+    fps_exact = Fraction(fps).limit_denominator(1001) if fps > 0 else Fraction(30, 1)
+    dur = (fc / fps) if fps > 0 and fc > 0 else 0.0
+    tb_den = max(1, int(round(fps * 1001))) if fps > 0 else 30
+    return VideoMetadata(
+        video_file=path,
+        video_height=int(height),
+        video_width=int(width),
+        video_fps=fps,
+        average_fps=fps,
+        video_fps_exact=fps_exact,
+        codec_name="unknown",
+        frames_count=fc,
+        duration=float(dur),
+        time_base=Fraction(1, tb_den),
+        start_pts=0,
+    )
+
+
+def _ffprobe_bin() -> str:
+    """Resolve ffprobe for scripts / webstream. Frozen playback does not use this."""
+    import os
+    import shutil
+
+    found = shutil.which("ffprobe")
+    if found:
+        return found
+    names = ("ffprobe.exe", "ffprobe")
+    candidates = []
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.dirname(sys.executable))
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        candidates.append(os.path.dirname(ffmpeg))
+    for folder in candidates:
+        for name in names:
+            cand = os.path.join(folder, name)
+            if os.path.isfile(cand):
+                return cand
+    return "ffprobe"
+
+
 def _nv12_to_bgr_hwc_gpu(nv12, h: int, w: int, bt709: bool, full_range: bool):
     """Convert a CUDA-resident nv12 frame (shape (h*3//2, w) uint8, stacked-plane layout:
     rows [0,h) = luma, rows [h, h*3//2) = interleaved chroma) to a GPU BGR HWC uint8 tensor,
@@ -112,8 +164,13 @@ def get_video_meta_data(path: str) -> VideoMetadata:
     ffprobe (falling back to OpenCV's frame-count probe when ffprobe's `nb_frames` is
     missing/zero, as some containers don't report it). `VideoMetadata` is imported from
     `sumu.ai.utils` (already ported there, same fields as lada's dataclass)."""
-    cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-select_streams', 'v', '-show_streams', '-show_format', path]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=_get_subprocess_startup_info())
+    cmd = [_ffprobe_bin(), '-v', 'quiet', '-print_format', 'json', '-select_streams', 'v', '-show_streams', '-show_format', path]
+    try:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=_get_subprocess_startup_info())
+    except FileNotFoundError as e:
+        raise FileNotFoundError(
+            f"ffprobe not found (needed for scripts/webstream path probes; daily player uses native meta): {e}"
+        ) from e
     out, err = p.communicate()
     if p.returncode != 0:
         raise Exception(f"error running ffprobe: {err.strip()}. Code: {p.returncode}, cmd: {cmd}")
